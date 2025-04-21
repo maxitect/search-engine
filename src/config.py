@@ -2,7 +2,7 @@ import os
 
 # Model parameters
 EMBEDDING_DIM = 128
-VOCAB_SIZE = 63642
+VOCAB_SIZE = 128528
 MAX_TITLE_LENGTH = 100
 
 # Training parameters
