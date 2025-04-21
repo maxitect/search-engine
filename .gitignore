@@ -1,0 +1,88 @@
+# Python
+__pycache__/
+*.pyc
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+*.egg-info/
+.installed.cfg
+*.egg
+.pytest_cache/
+.coverage
+htmlcov/
+
+# PyTorch
+*.pt
+*.pth
+*.onnx
+*.csv
+*.pkl
+text8
+hn_data
+
+# Jupyter Notebooks
+.ipynb_checkpoints
+*.ipynb
+
+# Environments
+.env
+.venv
+venv/
+ENV/
+conda-env/
+
+# Docker
+.docker/
+docker-compose.override.yml
+
+# IDE specific files
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# Database
+*.db
+*.sqlite3
+postgres-data/
+
+# Logs
+logs/
+*.log
+
+# Model files and data
+data/
+!data/.gitkeep
+!models/.gitkeep
+saved_models/
+
+# Streamlit
+secrets.toml
+
+# Temporary files
+tmp/
+.tmp/
+temp/
+
+# CI/CD
+.github/workflows/.env
+
+# Miscellaneous
+claude-conversations/
+.history/
+.aider*
+wandb/
