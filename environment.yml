@@ -12,3 +12,5 @@ dependencies:
   - numpy=2.2.5
   - scipy=1.15.2
   - wandb=0.19.8
+  - tqdm=4.67.1
+  - pyarrow=19.0.1
