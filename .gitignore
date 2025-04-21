@@ -32,6 +32,7 @@ htmlcov/
 *.pkl
 text8
 hn_data
+*.parquet
 
 # Jupyter Notebooks
 .ipynb_checkpoints
