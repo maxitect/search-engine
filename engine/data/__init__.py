@@ -1,3 +1,3 @@
-from .ms_marco import load_ms_marco
+from .ms_marco import load_ms_marco, MSMarcoDataset
 
-__all__ = ['load_ms_marco']
+__all__ = ['load_ms_marco', 'MSMarcoDataset']

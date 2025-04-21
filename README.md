@@ -2,6 +2,8 @@
 
 A search engine which takes in queries and produces a list of relevant documents using two tower architecture, trained on MS MARCO.
 
+Semantic search is a data searching technique that focuses on understanding the contextual meaning and intent behind a user’s search query, rather than only matching keywords.
+
 ## Deliverable
 
 - Inputs: a query, of any length
@@ -24,6 +26,19 @@ Hinge loss
 ## MS Marco Dataset
 
 Available on HuggingFace.
+
+## Potential pitfalls
+
+1. Word not included in the tokeniser (not in Wikipedia/ or niche words), this is especially pertinent for acronyms. Example, we had a query called 'what is rba', which turned into '['what', 'is', '<UNK>']' in tokenised form.
+
+
+## Installation
+
+Conda
+
+https://www.anaconda.com/docs/getting-started/miniconda/install#linux
+
+Setup your HF tokens
 
 ## References
 

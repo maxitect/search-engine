@@ -41,7 +41,8 @@ def build_vocab(tokens, min_freq=5):
 
     Args:
         tokens: A list of tokens (output from preprocess_text).
-        min_freq: The minimum frequency for a word to be included in the vocabulary.
+        min_freq: The minimum frequency for a word to be included in the
+        vocabulary.
 
     Returns:
         A tuple containing:
@@ -55,7 +56,7 @@ def build_vocab(tokens, min_freq=5):
     filtered_words = []
     filtered_counts = []
     num_discarded = 0
-    total_words = len(tokens)
+    # total_words = len(tokens)
     for word, count in word_counts.items():
         if count >= min_freq:
             num_discarded += count
@@ -92,13 +93,21 @@ class Vocabulary:
         self.word_to_idx_dict = word_to_idx
         self.idx_to_word_list = idx_to_word
         self.filtered_counts = torch.tensor(filtered_counts)
-        self.normalised_counts = self.filtered_counts/self.filtered_counts.sum()
+        self.normalised_counts = (
+            self.filtered_counts / self.filtered_counts.sum()
+        )
 
     def __len__(self):
         return len(self.word_to_idx_dict)
 
 
 class Tokeniser:
+    """
+    Usage:
+        tokeniser.tokenise_string(query) -> list of tokens
+        tokeniser.tokens_to_words(tokens) -> list of words
+    """
+
     def __init__(self, vocab: Vocabulary):
         self.vocab = vocab
         self.word_to_idx_dict = vocab.word_to_idx_dict
@@ -106,7 +115,7 @@ class Tokeniser:
         self.vocab_size = len(vocab)
 
     def word_to_idx(self, word: str):
-        if type(word) == str:
+        if type(word) is str:
             try:
                 return self.word_to_idx_dict[word]
             except KeyError:
@@ -115,7 +124,7 @@ class Tokeniser:
             raise ValueError(f'Word must be a string, got {type(word)}')
 
     def idx_to_word(self, idx: int):
-        if type(idx) == int:
+        if type(idx) is int:
             try:
                 return self.idx_to_word_list[idx]
             except KeyError:
@@ -130,7 +139,7 @@ class Tokeniser:
         return self.tokenise_list(preprocess_text(text))
 
     def tokens_to_words(self, tokens) -> list:
-        if type(tokens) == torch.Tensor:
+        if type(tokens) is torch.Tensor:
             if tokens.ndim == 1:
                 return [self.idx_to_word(int(idx)) for idx in tokens]
             elif tokens.ndim == 0:

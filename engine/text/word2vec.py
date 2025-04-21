@@ -1,14 +1,7 @@
 from __future__ import annotations
 
-import glob
-
 import torch
 import torch.nn as nn
-import wandb
-
-from .tokeniser import get_tokeniser
-
-# from utils import get_device
 
 
 class Word2Vec(torch.nn.Module):
@@ -25,10 +18,10 @@ class Word2Vec(torch.nn.Module):
         arXiv, 7 September 2013. https://doi.org/10.48550/arXiv.1301.3781.
 
         Skipgram:
-        Mikolov, Tomas, Ilya Sutskever, Kai Chen, Greg S Corrado, and Jeff Dean.
-        ‘Distributed Representations of Words and Phrases and Their
-        Compositionality’. In Advances in Neural Information Processing Systems,
-        Vol. 26. Curran Associates, Inc., 2013.
+        Mikolov, Tomas, Ilya Sutskever, Kai Chen, Greg S Corrado, and Jeff
+        Dean. ‘Distributed Representations of Words and Phrases and Their
+        Compositionality’. In Advances in Neural Information Processing
+        Systems, Vol. 26. Curran Associates, Inc., 2013.
 
 
         Args:
@@ -85,10 +78,11 @@ class SkipGram(torch.nn.Module):
         Initialize Word2Vec SkipGram model.
 
         Skipgram:
-        Mikolov, Tomas, Ilya Sutskever, Kai Chen, Greg S Corrado, and Jeff Dean.
+        Mikolov, Tomas, Ilya Sutskever, Kai Chen, Greg S Corrado, and Jeff
+        Dean.
         ‘Distributed Representations of Words and Phrases and Their
-        Compositionality’. In Advances in Neural Information Processing Systems,
-        Vol. 26. Curran Associates, Inc., 2013.
+        Compositionality’. In Advances in Neural Information Processing
+        Systems, Vol. 26. Curran Associates, Inc., 2013.
 
         Args:
             vocab_size: Size of the vocabulary
@@ -158,37 +152,3 @@ def skipgram_loss(
     # loss = -(pos.mean() + neg.mean()) / B
     loss = -(pos.sum() + neg.sum()) / B
     return loss
-
-
-def get_word2vec_from_checkpoint(checkpoint_path: str):
-    """
-    Get the word2vec model from the checkpoint
-    """
-    # device = get_device()
-    checkpoint = torch.load(checkpoint_path)
-
-    embedding_dim = checkpoint['embedding_dim']
-    vocab_size = checkpoint['vocab_size']
-    mode = checkpoint['mode']
-    if mode == 'cbow':
-        model = Word2Vec(vocab_size, embedding_dim, mode='cbow')
-    else:
-        model = SkipGram(vocab_size, embedding_dim)
-    model.load_state_dict(checkpoint['model_state_dict'])
-    return model
-
-
-def setup_word2vec():
-    text8_path = hf_hub_download(
-        repo_id='kwokkenton/hn-upvotes', filename='text8.parquet', repo_type='dataset')
-
-    # Load the word2vec model
-    w2v_checkpoint_path = get_wandb_checkpoint_path(
-        'kwokkenton-individual/mlx-week1-word2vec/skipgram:v34',
-    )
-
-    tokeniser = get_tokeniser(text8_path)
-    # vocab_size = tokeniser.vocab_size
-    w2v_model = get_word2vec_from_checkpoint(w2v_checkpoint_path).eval()
-
-    return tokeniser, w2v_model
