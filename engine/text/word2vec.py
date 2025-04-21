@@ -10,6 +10,7 @@ from .tokeniser import get_tokeniser
 
 # from utils import get_device
 
+
 class Word2Vec(torch.nn.Module):
     def __init__(
         self, vocab_size: int, embedding_dim: int,
@@ -176,17 +177,18 @@ def get_word2vec_from_checkpoint(checkpoint_path: str):
     model.load_state_dict(checkpoint['model_state_dict'])
     return model
 
-def setup_word2vec():
-    text8_path = hf_hub_download(repo_id="kwokkenton/hn-upvotes", filename="text8.parquet", repo_type="dataset")
 
+def setup_word2vec():
+    text8_path = hf_hub_download(
+        repo_id='kwokkenton/hn-upvotes', filename='text8.parquet', repo_type='dataset')
 
     # Load the word2vec model
     w2v_checkpoint_path = get_wandb_checkpoint_path(
-    'kwokkenton-individual/mlx-week1-word2vec/skipgram:v34')
+        'kwokkenton-individual/mlx-week1-word2vec/skipgram:v34',
+    )
 
     tokeniser = get_tokeniser(text8_path)
     # vocab_size = tokeniser.vocab_size
     w2v_model = get_word2vec_from_checkpoint(w2v_checkpoint_path).eval()
 
     return tokeniser, w2v_model
-
