@@ -40,13 +40,15 @@ We'll implement a Two Tower model with:
    - Pre-cache all document encodings
    - Encode incoming queries
    - Find and rank top 5 documents by similarity
+   - Use approximate nearest neighbour algorithms for faster retrieval at scale
+   - Implement batch processing for multiple simultaneous queries
 
 ## Key Concepts
 
 - **Negative Sampling**: Randomly selecting irrelevant documents (same number as relevant ones) to make training manageable
 - **Two Tower Architecture**: Separate encoders for queries and documents to handle their different structures
-- **Triplet Loss**: Trains model to minimise distance between query and relevant documents while maximizing distance to irrelevant ones
-- **RNN**: Processes text sequentially to preserve word order and relationships
+- **Triplet Loss**: Trains model to minimise distance between query and relevant documents while maximising distance to irrelevant ones
+- **RNN (Recurrent Neural Network)**: Processes text sequentially to preserve word order and relationships
 - **MLP (Multi-Layer Perceptron)**: A simpler feedforward neural network that can be used as an initial MVP before implementing the more complex RNN encoders
 - **GRU (Gated Recurrent Unit)**: An RNN variant that better manages information flow using gates to improve learning of long-range dependencies
 - **LSTM (Long Short-Term Memory)**: An RNN variant with additional cell state to preserve long-term information throughout the sequence
