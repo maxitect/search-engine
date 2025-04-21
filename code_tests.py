@@ -2,7 +2,7 @@ import torch
 
 
 def test_triplet_loss():
-    from model import TripletLoss
+    from engine.model import TripletLoss
 
     loss = TripletLoss(margin=1.0)
     N = 4

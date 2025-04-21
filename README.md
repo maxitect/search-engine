@@ -5,7 +5,7 @@ A search engine which takes in queries and produces a list of relevant documents
 ## Deliverable
 
 - Inputs: a query, of any length
-- Outputs: the most similar document
+- Outputs: the $k$ ids of the most similar document
 
 ## Training
 
