@@ -67,3 +67,4 @@ The model is trained on MS MARCO using triplet loss with negative sampling:
 
 [@maxitect](https://github.com/maxitect)
 [@kwokkenton](https://github.com/kwokkenton)
+[@FilippoRomeo](https://github.com/FilippoRomeo)
