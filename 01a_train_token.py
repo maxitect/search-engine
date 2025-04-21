@@ -46,7 +46,8 @@ with open(config.CORPUS_PATH, 'wb') as f:
 # Download MS MARCO dataset
 print("Downloading MS MARCO dataset...")
 r = requests.get(
-    "https://huggingface.co/datasets/microsoft/ms_marco/resolve/main/v1.1/train-00000-of-00001.parquet")
+    "https://huggingface.co/datasets/microsoft/ms_marco/resolve/main/v1.1/train-00000-of-00001.parquet"
+)
 with open("ms_marco_train.parquet", "wb") as f:
     f.write(r.content)
 
@@ -73,7 +74,8 @@ word_counts = collections.Counter(ms_marco_words)
 ms_marco_words = [word for word in ms_marco_words if word_counts[word] > 5]
 
 print(
-    f"Extracted {len(ms_marco_words)} words from MS MARCO passages after filtering")
+    f"Extracted {len(ms_marco_words)} "
+    "words from MS MARCO passages after filtering")
 
 # Add to existing corpus
 corpus.extend(ms_marco_words)
