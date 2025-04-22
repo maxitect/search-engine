@@ -1,3 +1,4 @@
+import numpy as np
 import src.config as config
 import torch
 from torch.utils.data import Dataset, DataLoader
@@ -71,17 +72,43 @@ class MSMARCODataset(Dataset):
 
     def __getitem__(self, idx):
         query = self.queries[idx]
-        doc = self.documents[idx]
-        label = self.labels[idx]
+        docs = self.documents[idx]  # This is now an array of documents
+        label = self.labels[idx]  # This could be an array of labels too
 
-        # Tokenise and convert to IDs
+        # Ensure docs is a list/array
+        if not isinstance(docs, (list, tuple, np.ndarray)):
+            docs = [docs]
+
+        # Ensure labels match documents
+        if isinstance(
+            label,
+            (list,
+             tuple,
+             np.ndarray)
+        ) and len(label) == len(docs):
+            labels = label
+        else:
+            # If we have a single label,
+            # apply it to all docs or use the first label
+            labels = [label] * len(docs) if not isinstance(
+                label,
+                (list, tuple,
+                 np.ndarray)
+            ) else [label[0]] * len(docs)
+
+        # Tokenize query
         query_ids = self._tokenise(query, self.max_query_len)
-        doc_ids = self._tokenise(doc, self.max_doc_len)
+
+        # Tokenize all documents
+        doc_ids_list = []
+        for doc in docs:
+            doc_ids = self._tokenise(doc, self.max_doc_len)
+            doc_ids_list.append(doc_ids)
 
         return {
             'query_ids': query_ids,
-            'doc_ids': doc_ids,
-            'label': label
+            'doc_ids_list': doc_ids_list,
+            'labels': labels
         }
 
     def _tokenise(self, text, max_len):
@@ -100,18 +127,25 @@ def generate_triplets(dataset, batch_size):
 
     for batch in dataloader:
         queries = batch['query_ids']
-        docs = batch['doc_ids']
-        labels = batch['label']
+        docs_lists = batch['doc_ids_list']
+        labels_lists = batch['labels']
 
-        # For each query, find a positive and negative document
+        # For each query
         for i in range(len(queries)):
             query = queries[i]
-            pos_indices = [j for j in range(len(labels)) if labels[j] == 1]
-            neg_indices = [j for j in range(len(labels)) if labels[j] == 0]
+            docs = docs_lists[i]
+            doc_labels = labels_lists[i]
+
+            # Find positive and negative documents
+            pos_indices = [j for j, label in enumerate(
+                doc_labels) if label == 1]
+            neg_indices = [j for j, label in enumerate(
+                doc_labels) if label == 0]
 
             if pos_indices and neg_indices:
-                pos_idx = pos_indices[0]
-                neg_idx = neg_indices[0]
+                pos_idx = pos_indices[0]  # Get first positive document
+                neg_idx = neg_indices[0]  # Get first negative document
+
                 triplets.append((query, docs[pos_idx], docs[neg_idx]))
 
     return triplets
