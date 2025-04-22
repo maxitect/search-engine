@@ -124,8 +124,8 @@ class MSMARCODataset(Dataset):
 def custom_collate_fn(batch):
     batch_dict = {
         'query_ids': [],
-        'doc_ids': [],
-        'label': []
+        'doc_ids_list': [],
+        'labels': []
     }
 
     for sample in batch:
@@ -134,22 +134,22 @@ def custom_collate_fn(batch):
         batch_dict['query_ids'].append(sample['query_ids'])
 
         # If doc_ids is a list of tensors, we'll process each one separately
-        if isinstance(sample['doc_ids'], list):
-            for doc, lab in zip(sample['doc_ids'], sample['label']):
+        if isinstance(sample['doc_ids_list'], list):
+            for doc, lab in zip(sample['doc_ids_list'], sample['labels']):
                 batch_dict['query_ids'].append(
-                    sample['query_ids'])  # Repeat the query
-                batch_dict['doc_ids'].append(doc)
-                batch_dict['label'].append(lab)
+                    sample['query_ids_list'])  # Repeat the query
+                batch_dict['doc_ids_list'].append(doc)
+                batch_dict['labels'].append(lab)
         else:
             # Just a single document
-            batch_dict['doc_ids'].append(sample['doc_ids'])
-            batch_dict['label'].append(sample['label'])
+            batch_dict['doc_ids_list'].append(sample['doc_ids_list'])
+            batch_dict['labels'].append(sample['labels'])
 
     # Stack the tensors
     result = {
         'query_ids': torch.stack(batch_dict['query_ids']),
-        'doc_ids': torch.stack(batch_dict['doc_ids']),
-        'label': torch.tensor(batch_dict['label'])
+        'doc_ids_list': torch.stack(batch_dict['doc_ids_list']),
+        'labels': torch.tensor(batch_dict['labels'])
     }
 
     return result
@@ -166,8 +166,8 @@ def generate_triplets(dataset, batch_size):
 
     for batch in dataloader:
         queries = batch['query_ids']
-        docs = batch['doc_ids']
-        labels = batch['label']
+        docs = batch['doc_ids_list']
+        labels = batch['labels']
 
         # For each query, find a positive and negative document
         for i in range(len(queries)):
