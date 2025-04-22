@@ -5,6 +5,12 @@ import torch.nn as nn
 import torch.optim as optim
 from tqdm import tqdm
 
+models_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'models')
+os.makedirs(models_dir, exist_ok=True)
+
+model_path = os.path.join(models_dir, 'best_model.pth')
+
+
 class TripletLoss(nn.Module):
     def __init__(self, margin=0.2):
         super().__init__()
@@ -16,7 +22,9 @@ class TripletLoss(nn.Module):
         losses = torch.relu(pos_dist - neg_dist + self.margin)
         return losses.mean()
 
-def train_model(model, train_loader, val_loader, num_epochs=5, lr=1e-4, checkpoint_path='../models/best_model.pth'):
+
+
+def train_model(model, train_loader, val_loader, num_epochs=5, lr=1e-4, checkpoint_path=model_path):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     model = model.to(device)
 
