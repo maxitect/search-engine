@@ -45,8 +45,8 @@ def main():
 
         api = wandb.Api()
         artifact = api.artifact(
-            'maxime-downe/mlx7-week1-skipgram/model-weights:'
-            f'{args.artifact_version}'
+            'maxime-downe-founders-and-coders-org/mlx7-week1-skipgram/'
+            f'model-weights:{args.artifact_version}'
         )
         artifact_dir = artifact.download()
 
