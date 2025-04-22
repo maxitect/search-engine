@@ -25,33 +25,6 @@ print(f"First 7 words: {corpus[:7]}")
 with open(config.CORPUS_PATH, 'wb') as f:
     pickle.dump(corpus, f)
 
-# Download MS MARCO test dataset
-print("Downloading MS MARCO test dataset...")
-r = requests.get(
-    "https://huggingface.co/datasets/microsoft/ms_marco/resolve/main/v1.1/"
-    "test-00000-of-00001.parquet"
-)
-with open("ms_marco_test.parquet", "wb") as f:
-    f.write(r.content)
-
-# Download MS MARCO training dataset
-print("Downloading MS MARCO train dataset...")
-r = requests.get(
-    "https://huggingface.co/datasets/microsoft/ms_marco/resolve/main/v1.1/"
-    "train-00000-of-00001.parquet"
-)
-with open("ms_marco_train.parquet", "wb") as f:
-    f.write(r.content)
-
-# Download MS MARCO validation dataset
-print("Downloading MS MARCO validation dataset...")
-r = requests.get(
-    "https://huggingface.co/datasets/microsoft/ms_marco/resolve/main/v1.1/"
-    "validation-00000-of-00001.parquet"
-)
-with open("ms_marco_validation.parquet", "wb") as f:
-    f.write(r.content)
-
 # Read all three parquet files and combine into one DataFrame
 test_df = pd.read_parquet("ms_marco_test.parquet")
 train_df = pd.read_parquet("ms_marco_train.parquet")
@@ -65,8 +38,8 @@ print(f"DataFrame columns: {df.columns.tolist()}")
 
 ms_marco_words = []
 passage_count = 0
-for passages in df.passages:
-    for passage in passages['passage_text']:
+for passages in df.documents:
+    for passage in passages:
         passage_count += 1
         ms_marco_words.extend(preprocess(passage))
 
