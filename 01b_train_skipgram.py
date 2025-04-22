@@ -12,8 +12,11 @@ import argparse
 
 def main():
     parser = argparse.ArgumentParser(description='Train SkipGram model')
-    parser.add_argument('--resume', action='store_true',
-                        help='Resume training from last checkpoint')
+    parser.add_argument(
+        '--resume',
+        action='store_true',
+        help='Resume training from last checkpoint'
+    )
     parser.add_argument(
         '--artifact_version',
         type=str,
@@ -42,7 +45,7 @@ def main():
 
         api = wandb.Api()
         artifact = api.artifact(
-            'maxitect/mlx7-week1-skipgram/model-weights:'
+            'maxime-downe/mlx7-week1-skipgram/model-weights:'
             f'{args.artifact_version}'
         )
         artifact_dir = artifact.download()
