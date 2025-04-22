@@ -1,7 +1,9 @@
+# src/data_preparation.py
 from datasets import load_dataset
 import random
 from transformers import AutoTokenizer
 from collections import defaultdict
+import torch
 
 def load_msmarco_data():
     """Load MS MARCO dataset from HuggingFace"""
@@ -12,25 +14,21 @@ def create_triples(dataset, num_negatives=1):
     """Generate (query, positive, negative) triples"""
     triples = []
     
-    # First collect all passages for negative sampling
+    # First collect all passages and build query-positive map
     all_passages = []
-    passage_id_map = {}
-    
-    # Build a map of query to relevant passages
     query_positives = defaultdict(list)
     
     for example in dataset['train']:
         query = example['query']
-        passages = example['passages']
+        passages = example['passages']['passage_text']
         is_selected = example['passages']['is_selected']
         
         # Store positive passages for this query
-        for passage, selected in zip(passages['passage_text'], is_selected):
-            if selected:
-                query_positives[query].append(passage)
-            all_passages.append(passage)
+        positives = [passages[i] for i, selected in enumerate(is_selected) if selected]
+        query_positives[query].extend(positives)
+        all_passages.extend(passages)
     
-    # Now create triples
+    # Create triples ensuring negatives aren't positives for the query
     for query, positives in query_positives.items():
         for pos in positives:
             # Sample negatives that aren't positives for this query
@@ -48,32 +46,48 @@ def create_triples(dataset, num_negatives=1):
     return triples
 
 def tokenize_triples(triples, tokenizer_name='bert-base-uncased'):
-    """Tokenize all text in the triples"""
+    """Tokenize all text in the triples with proper tensor formatting"""
     tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
-    tokenized_triples = []
+    
+    # Initialize lists to store tokenized inputs
+    query_inputs = []
+    pos_inputs = []
+    neg_inputs = []
     
     for query, pos, neg in triples:
-        tokenized_query = tokenizer(
+        # Tokenize each component
+        query_tokens = tokenizer(
             query, 
             truncation=True, 
             padding='max_length', 
             max_length=64,
             return_tensors='pt'
         )
-        tokenized_pos = tokenizer(
+        pos_tokens = tokenizer(
             pos, 
             truncation=True, 
             padding='max_length', 
             max_length=256,
             return_tensors='pt'
         )
-        tokenized_neg = tokenizer(
+        neg_tokens = tokenizer(
             neg, 
             truncation=True, 
             padding='max_length', 
             max_length=256,
             return_tensors='pt'
         )
-        tokenized_triples.append((tokenized_query, tokenized_pos, tokenized_neg))
+        
+        query_inputs.append(query_tokens)
+        pos_inputs.append(pos_tokens)
+        neg_inputs.append(neg_tokens)
     
-    return tokenized_triples
+    # Combine all batches
+    def collate_batch(batch):
+        return {
+            'input_ids': torch.cat([item['input_ids'] for item in batch], dim=0),
+            'attention_mask': torch.cat([item['attention_mask'] for item in batch], dim=0),
+            'token_type_ids': torch.cat([item['token_type_ids'] for item in batch], dim=0) if 'token_type_ids' in batch[0] else None
+        }
+    
+    return collate_batch(query_inputs), collate_batch(pos_inputs), collate_batch(neg_inputs)
