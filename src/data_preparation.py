@@ -5,7 +5,7 @@ import numpy as np
 
 def load_msmarco_data():
     """Load MS MARCO dataset from HuggingFace"""
-    dataset = load_dataset("ms_marco", "v1.1")
+    dataset = load_dataset("microsoft/ms_marco", "v1.1")
     return dataset
 
 def create_triples(dataset, num_negatives=1):
