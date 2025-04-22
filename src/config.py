@@ -21,10 +21,12 @@ MARGIN = 0.3
 DROPOUT_RATE = 0.2
 MAX_QUERY_LEN = 20
 MAX_DOC_LEN = 200
+HIDDEN_DIM = 256
+OUTPUT_DIM = 128
 
 # Model paths
-SKIPGRAM_CHECKPOINT_DIR = './models/skipgram'
-TWOTOWERS_CHECKPOINT_DIR = './models/two-towers'
+SKIPGRAM_CHECKPOINT_DIR = 'models/skipgram'
+TWOTOWERS_CHECKPOINT_DIR = 'models/two-towers'
 
 # File paths
 CORPUS_PATH = os.path.join(
