@@ -1,8 +1,9 @@
 from src.inference import SearchEngine
 from src.data_preparation import load_msmarco_data
 import os
+import argparse
 
-def main():
+def main(max_documents=1000):  # Default to 1000 documents for quick testing
     # Initialize the search engine with the trained model
     model_path = os.path.join('models', 'best_model.pth')
     search_engine = SearchEngine(model_path)
@@ -22,11 +23,16 @@ def main():
         
         # We'll use all passages, not just the selected ones
         for passage in passages:
+            if len(documents) >= max_documents:
+                break
             documents.append(passage)
             # Generate a unique ID for each passage
             doc_ids.append(f"doc_{len(doc_ids)}")
+        
+        if len(documents) >= max_documents:
+            break
     
-    print(f"Loaded {len(documents)} documents")
+    print(f"Loaded {len(documents)} documents (limited for testing)")
     
     # Cache document encodings
     print("Caching document encodings...")
@@ -61,4 +67,8 @@ def main():
             print("-" * 80)
 
 if __name__ == "__main__":
-    main() 
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--max-docs', type=int, default=1000, 
+                       help='Maximum number of documents to process (default: 1000)')
+    args = parser.parse_args()
+    main(args.max_docs) 
