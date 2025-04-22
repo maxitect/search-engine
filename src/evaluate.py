@@ -1,7 +1,7 @@
 import random
 import pandas as pd
-from src.dataset import MSMARCODataset
-from src.model import triplet_loss
+from src.dataset import MSMARCOTripletDataset
+from src.model import triplet_loss_function
 import src.config as config
 import torch
 import pickle
@@ -21,11 +21,9 @@ test_df = pd.read_parquet('ms_marco_test.parquet')
 
 # Evaluate word similarity for skipgram training
 def topk(mFoo):
-
     idx = vocab_to_int['computer']
     vec = mFoo.emb.weight[idx].detach()
     with torch.no_grad():
-
         vec = torch.nn.functional.normalize(vec.unsqueeze(0), p=2, dim=1)
         emb = torch.nn.functional.normalize(
             mFoo.emb.weight.detach(), p=2, dim=1)
@@ -47,45 +45,44 @@ def evaluate_progress(qry_tower, doc_tower, step):
     qry_tower.eval()
     doc_tower.eval()
 
-    print(f"\n--- Evaluation at step {step} ---")
+    print(f"\n--- Evaluation at {step} ---")
 
-    # Create a dataset for evaluation
-    eval_dataset = MSMARCODataset(
-        queries=test_df['queries'].tolist(),
-        documents=test_df['documents'].tolist(),
-        labels=test_df['labels'].tolist(),
-        vocab_to_int=vocab_to_int,
+    # Create a dataset for evaluation using our existing MSMARCOTripletDataset
+    eval_dataset = MSMARCOTripletDataset(
+        df=test_df,
         max_query_len=config.MAX_QUERY_LEN,
         max_doc_len=config.MAX_DOC_LEN
     )
 
-    index = random.randint(0, len(test_df['queries']) - 1)
-    query = test_df['queries'][index]
-    documents = test_df['documents'][index]
-    labels = test_df['labels'][index]
+    if len(eval_dataset) == 0:
+        print("No evaluation examples available")
+        return
+
+    # Get a random query from the test set
+    random_idx = random.randint(0, len(test_df) - 1)
+    query = test_df.iloc[random_idx]['queries']
+    documents = test_df.iloc[random_idx]['documents']
+    labels = test_df.iloc[random_idx]['labels']
 
     print(f"\nQuery: {query}")
 
-    # Get passages for this query
-    query_data = test_df[test_df['queries'] == query]
-
     # Separate positive and negative passages
-    pos_query = query_data[labels == 1]
-    positive_indices = pos_query.index.tolist()
-    neg_query = query_data[labels == 0]
-    negative_indices = neg_query.index.tolist()[:5]  # Limit to 5 negatives
+    pos_indices = [i for i, label in enumerate(labels) if label == 1]
+    neg_indices = [i for i, label in enumerate(
+        labels) if label == 0][:5]  # Limit to 5 negatives
 
-    if not positive_indices:
+    if not pos_indices:
         print("  No positive passages found for this query.")
+        return
 
     print(
-        f"  Found {len(positive_indices)} positive and "
-        f"{len(negative_indices)} negative passages"
+        f"  Found {len(pos_indices)} positive and "
+        f"{len(neg_indices)} negative passages"
     )
 
-    # Get query embedding once
-    sample = eval_dataset[positive_indices[0]]
-    query_ids = sample['query_ids'].unsqueeze(0).to(dev)
+    # Process query
+    query_ids = eval_dataset._tokenise(
+        query, eval_dataset.max_query_len).unsqueeze(0).to(dev)
     with torch.no_grad():
         query_embedding = qry_tower(query_ids)
 
@@ -93,28 +90,28 @@ def evaluate_progress(qry_tower, doc_tower, step):
     similarities = []
 
     # Process positive passages
-    for idx in positive_indices:
-        sample = eval_dataset[idx]
-        doc_ids = sample['doc_ids'].unsqueeze(0).to(dev)
+    for i in pos_indices:
+        doc = documents[i]
+        doc_ids = eval_dataset._tokenise(
+            doc, eval_dataset.max_doc_len).unsqueeze(0).to(dev)
 
         with torch.no_grad():
             doc_embedding = doc_tower(doc_ids)
             similarity = torch.sum(
                 query_embedding * doc_embedding, dim=1).item()
-            similarities.append(
-                (documents[idx], similarity, "POSITIVE"))
+            similarities.append((doc, similarity, "POSITIVE"))
 
     # Process negative passages
-    for idx in negative_indices:
-        sample = eval_dataset[idx]
-        doc_ids = sample['doc_ids'].unsqueeze(0).to(dev)
+    for i in neg_indices:
+        doc = documents[i]
+        doc_ids = eval_dataset._tokenise(
+            doc, eval_dataset.max_doc_len).unsqueeze(0).to(dev)
 
         with torch.no_grad():
             doc_embedding = doc_tower(doc_ids)
             similarity = torch.sum(
                 query_embedding * doc_embedding, dim=1).item()
-            similarities.append(
-                (documents[idx], similarity, "NEGATIVE"))
+            similarities.append((doc, similarity, "NEGATIVE"))
 
     # Sort by similarity
     similarities.sort(key=lambda x: x[1], reverse=True)
@@ -136,27 +133,30 @@ def evaluate_progress(qry_tower, doc_tower, step):
         1 for _, _, label in similarities[:5] if label == "POSITIVE")
     print(
         f"  Positive passages in top-5: {top5_positives} "
-        f"out of {len(positive_indices)}")
+        f"out of {len(pos_indices)}")
 
     # Calculate test loss
     test_loss = 0.0
     num_triplets = 0
 
-    for pos_idx in positive_indices:
-        for neg_idx in negative_indices:
-            pos_sample = eval_dataset[pos_idx]
-            neg_sample = eval_dataset[neg_idx]
+    for pos_idx in pos_indices:
+        for neg_idx in neg_indices:
+            pos_doc = documents[pos_idx]
+            neg_doc = documents[neg_idx]
 
-            query_ids = pos_sample['query_ids'].unsqueeze(0).to(dev)
-            pos_doc_ids = pos_sample['doc_ids'].unsqueeze(0).to(dev)
-            neg_doc_ids = neg_sample['doc_ids'].unsqueeze(0).to(dev)
+            query_ids = eval_dataset._tokenise(
+                query, eval_dataset.max_query_len).unsqueeze(0).to(dev)
+            pos_doc_ids = eval_dataset._tokenise(
+                pos_doc, eval_dataset.max_doc_len).unsqueeze(0).to(dev)
+            neg_doc_ids = eval_dataset._tokenise(
+                neg_doc, eval_dataset.max_doc_len).unsqueeze(0).to(dev)
 
             with torch.no_grad():
                 query_emb = qry_tower(query_ids)
                 pos_doc_emb = doc_tower(pos_doc_ids)
                 neg_doc_emb = doc_tower(neg_doc_ids)
 
-                loss = triplet_loss(
+                loss = triplet_loss_function(
                     query_emb,
                     pos_doc_emb,
                     neg_doc_emb,
@@ -170,3 +170,5 @@ def evaluate_progress(qry_tower, doc_tower, step):
 
     qry_tower.train()
     doc_tower.train()
+
+    return avg_test_loss
