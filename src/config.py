@@ -19,11 +19,12 @@ TWOTOWERS_LR_SCHEDULE = "linear_with_warmup"
 TWOTOWERS_WARMUP_RATIO = 0.1
 MARGIN = 0.3
 DROPOUT_RATE = 0.2
+MAX_QUERY_LEN = 20
+MAX_DOC_LEN = 200
 
 # Model paths
 SKIPGRAM_CHECKPOINT_DIR = './models/skipgram'
-DOMAIN_CHECKPOINT_DIR = './models/domain'
-REGRESSOR_CHECKPOINT_DIR = './models/regressor'
+TWOTOWERS_CHECKPOINT_DIR = './models/two-towers'
 
 # File paths
 CORPUS_PATH = os.path.join(
@@ -38,9 +39,8 @@ ID_TO_VOCAB_PATH = os.path.join(
 
 SKIPGRAM_BEST_MODEL_PATH = os.path.join(
     SKIPGRAM_CHECKPOINT_DIR, 'best_model.pth')
-DOMAIN_MAPPING_PATH = os.path.join(DOMAIN_CHECKPOINT_DIR, 'domain_mapping.pth')
-REGRESSOR_BEST_MODEL_PATH = os.path.join(
-    REGRESSOR_CHECKPOINT_DIR, 'best_model.pth'
+TWOTOWERS_BEST_MODEL_PATH = os.path.join(
+    TWOTOWERS_CHECKPOINT_DIR, 'best_model.pth'
 )
 
 # API settings
@@ -49,6 +49,5 @@ LOG_DIR_PATH = "/var/log/app"
 LOG_PATH = f"{LOG_DIR_PATH}/V-{MODEL_VERSION}.log"
 
 # Ensure directories exist
-os.makedirs('./models/skipgram', exist_ok=True)
-os.makedirs('./models/domain', exist_ok=True)
-os.makedirs('./models/regressor', exist_ok=True)
+os.makedirs(SKIPGRAM_CHECKPOINT_DIR, exist_ok=True)
+os.makedirs(TWOTOWERS_CHECKPOINT_DIR, exist_ok=True)
