@@ -6,8 +6,16 @@ A neural search engine implementing a two-tower architecture trained on the MS M
 
 1. Clone the repo
 
+   - **with https:**
+
    ```bash
-   conda env create -f environment.yml
+   git clone https://github.com/maxitect/search-engine.git
+   ```
+
+   - **with ssh:**
+
+   ```bash
+   git clone git@github.com:maxitect/search-engine.git
    ```
 
 1. Create environment from root:
@@ -68,3 +76,4 @@ The model is trained on MS MARCO using triplet loss with negative sampling:
 [@maxitect](https://github.com/maxitect)
 [@kwokkenton](https://github.com/kwokkenton)
 [@FilippoRomeo](https://github.com/FilippoRomeo)
+[@ocmoney](https://github.com/ocmoney)
