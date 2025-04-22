@@ -23,6 +23,9 @@ Hinge loss
 - Want high loss when positive distances are large, and when negative distances are small
 - Want no loss if the distances are 'far enough' by a margin
 
+Loss function
+$$L = \frac{1}{B}\sum_{B} \big [ \max(\text{dist}(q,p^{+}) - \frac{1}{K} \sum_K \text{dist}(q,p^{-}_k) , 0\big)]$$
+
 ## MS Marco Dataset
 
 Available on HuggingFace.
@@ -31,24 +34,43 @@ Available on HuggingFace.
 
 1. Word not included in the tokeniser (not in Wikipedia/ or niche words), this is especially pertinent for acronyms. Example, we had a query called 'what is rba', which turned into '['what', 'is', '<UNK>']' in tokenised form.
 
+### Notes
+1. I trained two models with either higher
+
+
+## Deployment
+
+```bash
+python3 create_db.py
+
+```
+
 
 ## Installation
 
 Conda
 
 ```bash
+# Install miniconda for the system
 mkdir -p ~/miniconda3
 wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -O ~/miniconda3/miniconda.sh
 bash ~/miniconda3/miniconda.sh -b -u -p ~/miniconda3
 rm ~/miniconda3/miniconda.sh
 source ~/miniconda3/bin/activate
 
-#
-conda install conda-forge::wandb
-conda install -c huggingface -c conda-forge datasets
-# Login
+# Create conda environment
+conda env create --file environment.yml
+
+# conda install conda-forge::wandb
+# conda install -c huggingface -c conda-forge datasets
+
+# Login manually
 wandb login
 huggingface-cli login
+
+# Add Git credentials
+git config --global user.name ""
+git config --global user.email ""
 ```
 
 ### Todo:

@@ -2,3 +2,5 @@ __pycache__
 *.pyc
 .mypy_cache
 artifacts/
+wandb/
+chroma/
