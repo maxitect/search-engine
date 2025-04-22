@@ -11,9 +11,22 @@ def main():
     print("Loading dataset...")
     dataset = load_msmarco_data()
     
-    # Extract documents and their IDs
-    documents = dataset['passage'].tolist()
-    doc_ids = dataset['id'].tolist()
+    # Extract documents and their IDs from the training set
+    documents = []
+    doc_ids = []
+    
+    # Process the training set to get all passages
+    for example in dataset['train']:
+        passages = example['passages']['passage_text']
+        is_selected = example['passages']['is_selected']
+        
+        # We'll use all passages, not just the selected ones
+        for passage in passages:
+            documents.append(passage)
+            # Generate a unique ID for each passage
+            doc_ids.append(f"doc_{len(doc_ids)}")
+    
+    print(f"Loaded {len(documents)} documents")
     
     # Cache document encodings
     print("Caching document encodings...")
