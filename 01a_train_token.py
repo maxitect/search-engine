@@ -25,7 +25,7 @@ print(f"First 7 words: {corpus[:7]}")
 with open(config.CORPUS_PATH, 'wb') as f:
     pickle.dump(corpus, f)
 
-# Download MS MARCO dataset
+# Download MS MARCO test dataset
 print("Downloading MS MARCO test dataset...")
 r = requests.get(
     "https://huggingface.co/datasets/microsoft/ms_marco/resolve/main/v1.1/"
@@ -34,7 +34,7 @@ r = requests.get(
 with open("ms_marco_test.parquet", "wb") as f:
     f.write(r.content)
 
-# Download MS MARCO dataset
+# Download MS MARCO training dataset
 print("Downloading MS MARCO train dataset...")
 r = requests.get(
     "https://huggingface.co/datasets/microsoft/ms_marco/resolve/main/v1.1/"
@@ -43,7 +43,7 @@ r = requests.get(
 with open("ms_marco_train.parquet", "wb") as f:
     f.write(r.content)
 
-# Download MS MARCO dataset
+# Download MS MARCO validation dataset
 print("Downloading MS MARCO validation dataset...")
 r = requests.get(
     "https://huggingface.co/datasets/microsoft/ms_marco/resolve/main/v1.1/"
@@ -52,7 +52,6 @@ r = requests.get(
 with open("ms_marco_validation.parquet", "wb") as f:
     f.write(r.content)
 
-# Process parquet file
 # Read all three parquet files and combine into one DataFrame
 test_df = pd.read_parquet("ms_marco_test.parquet")
 train_df = pd.read_parquet("ms_marco_train.parquet")
@@ -64,19 +63,14 @@ df = pd.concat([train_df, test_df, validation_df], ignore_index=True)
 print(f"Combined DataFrame has {len(df)} rows")
 print(f"DataFrame columns: {df.columns.tolist()}")
 
-# Extract text from the passage_text column directly from the screenshot
-passage_texts = []
-for idx, row in df.iterrows():
-    passages = row.passages['passage_text']
-    for passage in passages:
-        passage_texts.append(passage)
-
-print(f"Extracted {len(passage_texts)} passage texts")
-
-# Process passages and add to corpus
 ms_marco_words = []
-for text in passage_texts:
-    ms_marco_words.extend(preprocess(text))
+passage_count = 0
+for passages in df.passages:
+    for passage in passages['passage_text']:
+        passage_count += 1
+        ms_marco_words.extend(preprocess(passage))
+
+print(f"Extracted {passage_count} passage texts")
 
 # Filter out low frequency words
 word_counts = collections.Counter(ms_marco_words)
@@ -84,7 +78,8 @@ ms_marco_words = [word for word in ms_marco_words if word_counts[word] > 5]
 
 print(
     f"Extracted {len(ms_marco_words)} "
-    "words from MS MARCO passages after filtering")
+    "words from MS MARCO passages after filtering"
+)
 
 # Add to existing corpus
 corpus.extend(ms_marco_words)
@@ -97,17 +92,15 @@ with open(config.CORPUS_PATH, 'wb') as f:
 
 words_to_ids, ids_to_words = create_lookup_tables(corpus)
 print(f"Vocabulary size: {len(words_to_ids)}")
-# Create tokens from updated corpus
 tokens = [words_to_ids[word] for word in corpus]
 print(f"Total tokens: {len(tokens)}")
 
-print(type(tokens))
-print(tokens[:7])
+print(f"Token object type: {type(tokens)}")
+print(f"First 7 tokens: {tokens[:7]}")
 
-print(ids_to_words[5234]
-      if 5234 in ids_to_words else "Index 5234 not in vocabulary")
-print(words_to_ids.get('anarchism', 'Word not in vocabulary'))
-print(words_to_ids.get('have', 'Word not in vocabulary'))
+print(f"This word should be 'beaches': {ids_to_words[5234]}")
+print(f"Index of word 'anarchism': {words_to_ids.get('anarchism')}")
+print(f"Index of word 'have': {words_to_ids.get('have')}")
 
 # Save updated vocabulary
 with open(config.VOCAB_TO_ID_PATH, 'wb') as f:
