@@ -30,12 +30,12 @@ class MSMarcoDataset(Dataset):
         super().__init__()
 
         if split not in ['train', 'validation', 'test']:
-            raise ValueError(f"Invalid split: {split}")
+            raise ValueError(f'Invalid split: {split}')
         ds = load_ms_marco()[split]
-        logger.info(f"Loaded {split} dataset")
+        logger.info(f'Loaded {split} dataset')
         self.rows_with_k_answers = self.rows_k_answers(ds, k=1)
         self.ds = ds.select(self.rows_with_k_answers)
-        logger.info(f"Selected {len(self.ds)} rows with 1 answer")
+        logger.info(f'Selected {len(self.ds)} rows with 1 answer')
         self.num_negative_samples = num_negative_samples
 
     def __len__(self):

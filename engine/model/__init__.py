@@ -1,3 +1,3 @@
 from .loss import TripletLoss
-
-__all__ = ['TripletLoss']
+from .encoder import Encoder
+__all__ = ['TripletLoss', 'Encoder']
