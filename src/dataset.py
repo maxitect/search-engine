@@ -86,11 +86,11 @@ class MSMARCODataset(Dataset):
 
     def _tokenise(self, text, max_len):
         tokens = preprocess(text)
-        ids = [self.vocab_to_int.get(token, self.vocab_to_int['<UNK>'])
-               for token in tokens[:max_len]]
+        # For unknown tokens, use 0 (PAD token) instead of raising an error
+        ids = [self.vocab_to_int.get(token, 0) for token in tokens[:max_len]]
         # Pad sequence
         if len(ids) < max_len:
-            ids = ids + [self.vocab_to_int['<PAD>']] * (max_len - len(ids))
+            ids = ids + [0] * (max_len - len(ids))
         return torch.tensor(ids)
 
 
