@@ -137,7 +137,7 @@ def custom_collate_fn(batch):
         if isinstance(sample['doc_ids_list'], list):
             for doc, lab in zip(sample['doc_ids_list'], sample['labels']):
                 batch_dict['query_ids'].append(
-                    sample['query_ids_list'])  # Repeat the query
+                    sample['query_ids'])  # Repeat the query
                 batch_dict['doc_ids_list'].append(doc)
                 batch_dict['labels'].append(lab)
         else:
