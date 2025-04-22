@@ -1,7 +1,6 @@
-import numpy as np
 import src.config as config
 import torch
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import Dataset
 import pickle
 
 from src.utils.tokenise import preprocess
@@ -50,134 +49,76 @@ class Wiki(Dataset):
             return torch.tensor(prv + nex), torch.tensor([ipt])
 
 
-class MSMARCODataset(Dataset):
+class MSMARCOTripletDataset(Dataset):
     def __init__(
-            self,
-            queries,
-            documents,
-            labels,
-            vocab_to_int,
-            max_query_len=20,
-            max_doc_len=200
+        self,
+        df,
+        max_query_len=20,
+        max_doc_len=200,
+        max_neg_samples=5
     ):
-        self.queries = queries
-        self.documents = documents
-        self.labels = labels
-        self.vocab_to_int = vocab_to_int
+        self.vocab_to_int = pickle.load(
+            open(config.VOCAB_TO_ID_PATH, 'rb'))
+        self.triplets = []
+
+        # Extract data from DataFrame
+        queries = df['queries']
+        documents = df['documents']
+        labels = df['labels']
+
+        # Process lists of lists structure
+        for i in range(len(queries)):
+            query = queries[i]
+            # List of documents for this query
+            docs_list = documents[i].tolist()
+            # List of labels for these documents
+            labels_list = labels[i].tolist()
+
+            # Skip if we don't have exactly one positive document
+            if sum(labels_list) != 1:
+                continue
+
+            # Find positive and negative documents
+            pos_idx = labels_list.index(1)
+            neg_indices = [j for j in range(
+                len(labels_list)) if labels_list[j] == 0]
+
+            # Skip if no negatives
+            if not neg_indices:
+                continue
+
+            pos_doc = docs_list[pos_idx]
+
+            # Limit number of negative samples per positive example
+            neg_samples = min(max_neg_samples, len(neg_indices))
+            for j in range(neg_samples):
+                neg_doc = docs_list[neg_indices[j]]
+                self.triplets.append((query, pos_doc, neg_doc))
+
         self.max_query_len = max_query_len
         self.max_doc_len = max_doc_len
 
     def __len__(self):
-        return len(self.queries)
+        return len(self.triplets)
 
     def __getitem__(self, idx):
-        query = self.queries[idx]
-        docs = self.documents[idx]  # This is now an array of documents
-        label = self.labels[idx]  # This could be an array of labels too
+        query, pos_doc, neg_doc = self.triplets[idx]
 
-        # Ensure docs is a list/array
-        if not isinstance(docs, (list, tuple, np.ndarray)):
-            docs = [docs]
-
-        # Ensure labels match documents
-        if isinstance(
-            label,
-            (list,
-             tuple,
-             np.ndarray)
-        ) and len(label) == len(docs):
-            labels = label
-        else:
-            # If we have a single label,
-            # apply it to all docs or use the first label
-            labels = [label] * len(docs) if not isinstance(
-                label,
-                (list, tuple,
-                 np.ndarray)
-            ) else [label[0]] * len(docs)
-
-        # Tokenize query
         query_ids = self._tokenise(query, self.max_query_len)
-
-        # Tokenize all documents
-        doc_ids_list = []
-        for doc in docs:
-            doc_ids = self._tokenise(doc, self.max_doc_len)
-            doc_ids_list.append(doc_ids)
+        pos_doc_ids = self._tokenise(pos_doc, self.max_doc_len)
+        neg_doc_ids = self._tokenise(neg_doc, self.max_doc_len)
 
         return {
             'query_ids': query_ids,
-            'doc_ids_list': doc_ids_list,
-            'labels': labels
+            'pos_doc_ids': pos_doc_ids,
+            'neg_doc_ids': neg_doc_ids
         }
 
     def _tokenise(self, text, max_len):
-        tokens = preprocess(text)
-        # For unknown tokens, use 0 (PAD token) instead of raising an error
+        tokens = preprocess(str(text))
+        # Use 0 for unknown tokens
         ids = [self.vocab_to_int.get(token, 0) for token in tokens[:max_len]]
         # Pad sequence
         if len(ids) < max_len:
             ids = ids + [0] * (max_len - len(ids))
         return torch.tensor(ids)
-
-
-def custom_collate_fn(batch):
-    batch_dict = {
-        'query_ids': [],
-        'doc_ids_list': [],
-        'labels': []
-    }
-
-    for sample in batch:
-        # Each sample has query_ids, doc_ids (possibly a list), and label
-        # (possibly a list)
-        batch_dict['query_ids'].append(sample['query_ids'])
-
-        # If doc_ids is a list of tensors, we'll process each one separately
-        if isinstance(sample['doc_ids_list'], list):
-            for doc, lab in zip(sample['doc_ids_list'], sample['labels']):
-                batch_dict['query_ids'].append(
-                    sample['query_ids'])  # Repeat the query
-                batch_dict['doc_ids_list'].append(doc)
-                batch_dict['labels'].append(lab)
-        else:
-            # Just a single document
-            batch_dict['doc_ids_list'].append(sample['doc_ids_list'])
-            batch_dict['labels'].append(sample['labels'])
-
-    # Stack the tensors
-    result = {
-        'query_ids': torch.stack(batch_dict['query_ids']),
-        'doc_ids_list': torch.stack(batch_dict['doc_ids_list']),
-        'labels': torch.tensor(batch_dict['labels'])
-    }
-
-    return result
-
-
-def generate_triplets(dataset, batch_size):
-    dataloader = DataLoader(
-        dataset,
-        batch_size=batch_size,
-        shuffle=True,
-        collate_fn=custom_collate_fn
-    )
-    triplets = []
-
-    for batch in dataloader:
-        queries = batch['query_ids']
-        docs = batch['doc_ids_list']
-        labels = batch['labels']
-
-        # For each query, find a positive and negative document
-        for i in range(len(queries)):
-            query = queries[i]
-            pos_indices = [j for j in range(len(labels)) if labels[j] == 1]
-            neg_indices = [j for j in range(len(labels)) if labels[j] == 0]
-
-            if pos_indices and neg_indices:
-                pos_idx = pos_indices[0]
-                neg_idx = neg_indices[0]
-                triplets.append((query, docs[pos_idx], docs[neg_idx]))
-
-    return triplets
