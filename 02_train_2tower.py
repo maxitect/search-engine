@@ -12,14 +12,19 @@ from src.evaluate import evaluate_progress
 
 # Device configuration
 dev = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+print(f'Using device: {dev}')
 ts = datetime.datetime.now().strftime('%Y_%m_%d__%H_%M_%S')
+print(f'Timestamp: {ts}')
 
 # Load vocabulary
 vocab_to_int = pickle.load(open(config.VOCAB_TO_ID_PATH, 'rb'))
+print(f'Vocabulary size: {len(vocab_to_int)}')
 
 # Load data from parquet files
 train_df = pd.read_parquet('ms_marco_train.parquet')
 val_df = pd.read_parquet('ms_marco_validation.parquet')
+print(f'Train size: {len(train_df)}')
+print(f'Validation size: {len(val_df)}')
 
 # Create datasets
 train_dataset = MSMARCODataset(
@@ -30,6 +35,7 @@ train_dataset = MSMARCODataset(
     max_query_len=config.MAX_QUERY_LEN,
     max_doc_len=config.MAX_DOC_LEN
 )
+print(f'Train dataset size: {len(train_dataset)}')
 
 val_dataset = MSMARCODataset(
     queries=train_df['queries'].tolist(),
@@ -39,16 +45,21 @@ val_dataset = MSMARCODataset(
     max_query_len=config.MAX_QUERY_LEN,
     max_doc_len=config.MAX_DOC_LEN
 )
+print(f'Validation dataset size: {len(val_dataset)}')
 
 # Generate triplets
 train_triplets = generate_triplets(train_dataset, config.TWOTOWERS_BATCH_SIZE)
 val_triplets = generate_triplets(val_dataset, config.TWOTOWERS_BATCH_SIZE)
+print(f'Train triplets size: {len(train_triplets)}')
+print(f'Validation triplets size: {len(val_triplets)}')
 
 # Load pretrained SkipGram model
 skipgram = model.SkipGram(len(vocab_to_int), config.EMBEDDING_DIM)
 skipgram.load_state_dict(torch.load(config.SKIPGRAM_BEST_MODEL_PATH))
 skipgram.to(dev)
 skipgram.eval()
+print(f'Loaded SkipGram model from {config.SKIPGRAM_BEST_MODEL_PATH}')
+print(f'SkipGram model size: {sum(p.numel() for p in skipgram.parameters())}')
 
 # Initialize query and document towers
 qry_tower = model.QryTower(
@@ -59,6 +70,7 @@ qry_tower = model.QryTower(
     skipgram_model=skipgram,
     freeze_embeddings=True
 )
+print(f'Query tower size: {sum(p.numel() for p in qry_tower.parameters())}')
 
 doc_tower = model.DocTower(
     vocab_size=len(vocab_to_int),
@@ -68,32 +80,38 @@ doc_tower = model.DocTower(
     skipgram_model=skipgram,
     freeze_embeddings=True
 )
+print(f'Document tower size: {sum(p.numel() for p in doc_tower.parameters())}')
 
 # Create two-tower model
 two_tower = model.TwoTowerModel(qry_tower, doc_tower)
 two_tower.to(dev)
+print(f'Two-tower model size: {sum(p.numel() for p in two_tower.parameters())}')
 
 # Define optimizer
-optimizer = torch.optim.Adam([
+optimiser = torch.optim.Adam([
     {'params': qry_tower.parameters()},
     {'params': doc_tower.parameters()}
 ], lr=config.LEARNING_RATE)
+print(f'Optimizer: {optimiser}')
 
 # Learning rate scheduler
 scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-    optimizer, mode='min', factor=0.5, patience=3, verbose=True
+    optimiser, mode='min', factor=0.5, patience=3, verbose=True
 )
+print(f'Learning rate scheduler: {scheduler}')
 
 # Initialize wandb
 wandb.init(project='search-engine', name=f'two-tower_{ts}')
 
 # Training loop
 best_val_loss = float('inf')
+print(f'Best validation loss: {best_val_loss:.4f}')
 
 for epoch in range(config.EPOCHS):
     # Training
     two_tower.train()
     train_loss = 0
+    print(f'\nEpoch {epoch+1}/{config.EPOCHS}')
 
     progress = tqdm(train_triplets, desc=f'Epoch {epoch+1} (Train)')
     for step, (query, pos_doc, neg_doc) in enumerate(progress):
@@ -101,7 +119,7 @@ for epoch in range(config.EPOCHS):
         pos_doc = pos_doc.to(dev)
         neg_doc = neg_doc.to(dev)
 
-        optimizer.zero_grad()
+        optimiser.zero_grad()
 
         # Forward pass
         query_emb = qry_tower(query.unsqueeze(0))
@@ -114,7 +132,7 @@ for epoch in range(config.EPOCHS):
 
         # Backward pass and optimize
         loss.backward()
-        optimizer.step()
+        optimiser.step()
 
         train_loss += loss.item()
         progress.set_postfix({'loss': loss.item()})
