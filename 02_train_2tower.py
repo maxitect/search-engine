@@ -85,7 +85,10 @@ print(f'Document tower size: {sum(p.numel() for p in doc_tower.parameters())}')
 # Create two-tower model
 two_tower = model.TwoTowerModel(qry_tower, doc_tower)
 two_tower.to(dev)
-print(f'Two-tower model size: {sum(p.numel() for p in two_tower.parameters())}')
+print(
+    'Two-tower model size: '
+    f'{sum(p.numel() for p in two_tower.parameters())}'
+)
 
 # Define optimizer
 optimiser = torch.optim.Adam([
