@@ -90,7 +90,7 @@ def main():
         epoch_loss = 0
         batch_count = 0
         prgs = tqdm.tqdm(dl, desc=f'Epoch {epoch+1}', leave=False)
-        for i, (ipt, trg) in enumerate(prgs):
+        for step, (ipt, trg) in enumerate(prgs):
             ipt, trg = ipt.to(dev), trg.to(dev)
             opFoo.zero_grad()
             out = mFoo(ipt)
@@ -108,7 +108,7 @@ def main():
             global_step += 1
 
             wandb.log({'loss': loss.item(), 'step': global_step})
-            if i % 10_000 == 0:
+            if step % 10_000 == 0:
                 evaluate.topk(mFoo)
 
         avg_epoch_loss = epoch_loss / batch_count
