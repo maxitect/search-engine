@@ -1,7 +1,7 @@
 # src/main.py
 from data_preparation import load_msmarco_data, create_triples, tokenize_triples
 from model import TwoTowerModel
-from training import train_model
+from training import train_model, collate_batch
 from torch.utils.data import DataLoader, TensorDataset
 import torch
 
