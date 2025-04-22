@@ -160,10 +160,31 @@ class TwoTowerModel(nn.Module):
         return indices
 
 
-def triplet_loss(anchor, positive, negative, margin=0.3):
-    pos_sim = torch.sum(anchor * positive, dim=1)
-    neg_sim = torch.sum(anchor * negative, dim=1)
+def cosine_similarity(query, document):
+    query_norm = torch.norm(query, dim=1, keepdim=True)
+    doc_norm = torch.norm(document, dim=1, keepdim=True)
 
-    # We want positive similarity to be higher than negative similarity
-    losses = F.relu(margin - pos_sim + neg_sim)
-    return losses.mean()
+    return torch.sum(
+        query * document,
+        dim=1
+    ) / (query_norm * doc_norm).squeeze()
+
+
+def triplet_loss_function(
+    query,
+    relevant_document,
+    irrelevant_document,
+    margin=0.3
+):
+    relevant_similarity = cosine_similarity(query, relevant_document)
+    irrelevant_similarity = cosine_similarity(query, irrelevant_document)
+
+    # Convert similarity to distance (1 - similarity)
+    relevant_distance = 1 - relevant_similarity
+    irrelevant_distance = 1 - irrelevant_similarity
+
+    # Compute triplet loss with proper batching (element-wise maximum)
+    triplet_loss = torch.clamp(
+        relevant_distance - irrelevant_distance + margin, min=0)
+
+    return triplet_loss.mean()
