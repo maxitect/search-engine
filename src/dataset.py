@@ -3,7 +3,7 @@ import torch
 from torch.utils.data import Dataset, DataLoader
 import pickle
 
-from utils.tokenise import preprocess
+from src.utils.tokenise import preprocess
 
 
 class Wiki(Dataset):
