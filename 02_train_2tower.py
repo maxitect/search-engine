@@ -85,7 +85,7 @@ scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
 )
 
 # Initialize wandb
-wandb.init(project='msmarco-two-tower', name=f'{ts}')
+wandb.init(project='search-engine', name=f'two-tower_{ts}')
 
 # Training loop
 best_val_loss = float('inf')
