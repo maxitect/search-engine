@@ -43,6 +43,9 @@ def main():
         "What are the applications of artificial intelligence?"
     ]
     
+    # Create a mapping from doc_id to document text
+    doc_id_to_text = {doc_id: text for doc_id, text in zip(doc_ids, documents)}
+    
     # Perform searches
     print("\nPerforming searches...")
     for query in queries:
@@ -50,7 +53,12 @@ def main():
         results = search_engine.search(query, top_k=5)
         print("Top 5 results:")
         for doc_id, score in results:
-            print(f"Document ID: {doc_id}, Similarity Score: {score:.4f}")
+            print(f"\nDocument ID: {doc_id}")
+            print(f"Similarity Score: {score:.4f}")
+            print("Content:")
+            print("-" * 80)
+            print(doc_id_to_text[doc_id])
+            print("-" * 80)
 
 if __name__ == "__main__":
     main() 
