@@ -1,4 +1,4 @@
-name: ss2-env
+name: ss-env
 channels:
   - defaults
   - conda-forge
@@ -15,6 +15,7 @@ dependencies:
   - conda-forge::wandb
   - tqdm
   - pre-commit
+  - streamlit
   - pip:
     - wandb
     - fastparquet

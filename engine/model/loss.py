@@ -5,13 +5,19 @@ class TripletLoss():
     def __init__(self, distance_metric: str = 'cosine', margin: float = 1.0):
         self.distance_metric = distance_metric
         if distance_metric == 'cosine':
-            self.distance_fn = torch.nn.functional.cosine_similarity
+            self.distance_fn = self.cosine_distance
         else:
             # Use L2 distance
             raise NotImplementedError('L2 distance not implemented')
-            # self.distance_fn = torch.nn.functional.pairwise_distance
 
         self.margin = margin
+
+    def cosine_distance(
+        self,
+        a: torch.Tensor,
+        b: torch.Tensor,
+    ) -> torch.Tensor:
+        return 1 - torch.nn.functional.cosine_similarity(a, b)
 
     def __call__(
         self,
@@ -53,10 +59,11 @@ class TripletLoss():
             query_embedding.view(B, D, 1),
             negative_embedding,
         )
-        # Broadcast to (B) using sum and do hinged loss
+        # Broadcast to (B) using mean to aggregate over negatives and do
+        # hinged loss
         loss = torch.maximum(
             query_positive_distance -
-            query_negative_distance.sum(dim=1) + self.margin,
+            query_negative_distance.mean(dim=1) + self.margin,
             torch.zeros_like(query_positive_distance),
         )
         # Take mean over batch

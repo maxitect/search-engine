@@ -54,16 +54,16 @@ class MSMarcoDataset(Dataset):
         # Want positive and negative samples
         query, positive_answer, negative_answers = self._get_entry_item(idx)
         num_hard_negatives = len(negative_answers)
-        assert num_hard_negatives < self.num_negative_samples, (
-            'Num negatives is less than num hard negatives'
-        )
-
-        num_random_negatives = self.num_negative_samples - num_hard_negatives
-        random_answers = self._get_random_negative_samples(
-            idx,
-            num_samples=num_random_negatives,
-        )
-        negative_answers.extend(random_answers)
+        if num_hard_negatives >= self.num_negative_samples:
+            # randomly select from the negative answers
+            negative_answers = random.sample(negative_answers, self.num_negative_samples)
+        else: 
+            num_random_negatives = self.num_negative_samples - num_hard_negatives
+            random_answers = self._get_random_negative_samples(
+                idx,
+                num_samples=num_random_negatives,
+            )
+            negative_answers.extend(random_answers)
         return query, positive_answer, negative_answers
 
     def _get_entry_item(self, idx):
