@@ -44,7 +44,7 @@ def main(max_documents=1000):  # Default to 1000 documents for quick testing
     
     # Example queries
     queries = [
-        "What is machine learning?",
+        "What is a color?",
         "How does a neural network work?",
         "What are the applications of artificial intelligence?"
     ]
