@@ -57,7 +57,10 @@ def train_model(model, train_loader, val_loader, num_epochs=3, checkpoint_dir='c
         # Training phase
         model.train()
         train_loss = 0.0
-        for batch_idx, (query, pos, neg) in enumerate(train_loader):
+        
+        # Add progress bar for training
+        train_pbar = tqdm(train_loader, desc=f"Epoch {epoch + 1}")
+        for batch_idx, (query, pos, neg) in enumerate(train_pbar):
             # Move data to device
             query = {k: v.to(device) for k, v in query.items()}
             pos = {k: v.to(device) for k, v in pos.items()}
@@ -77,6 +80,9 @@ def train_model(model, train_loader, val_loader, num_epochs=3, checkpoint_dir='c
             
             train_loss += loss.item()
             
+            # Update progress bar
+            train_pbar.set_postfix({'loss': loss.item()})
+            
             # Log batch loss
             if batch_idx % 10 == 0:
                 wandb.log({
@@ -90,8 +96,11 @@ def train_model(model, train_loader, val_loader, num_epochs=3, checkpoint_dir='c
         # Validation phase
         model.eval()
         val_loss = 0.0
+        
+        # Add progress bar for validation
+        val_pbar = tqdm(val_loader, desc="Validating")
         with torch.no_grad():
-            for query, pos, neg in val_loader:
+            for query, pos, neg in val_pbar:
                 query = {k: v.to(device) for k, v in query.items()}
                 pos = {k: v.to(device) for k, v in pos.items()}
                 neg = {k: v.to(device) for k, v in neg.items()}
@@ -101,6 +110,9 @@ def train_model(model, train_loader, val_loader, num_epochs=3, checkpoint_dir='c
                 
                 loss = criterion(query_repr, pos_repr, neg_repr)
                 val_loss += loss.item()
+                
+                # Update validation progress bar
+                val_pbar.set_postfix({'val_loss': loss.item()})
         
         avg_val_loss = val_loss / len(val_loader)
         
