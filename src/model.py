@@ -36,20 +36,9 @@ class TwoTowerModel(nn.Module):
         self.doc_proj = nn.Linear(512, 256)
 
     def forward(self, query_input, doc_input):
-        # Get embeddings - handle input format properly
-        query_outputs = self.embedding(
-            input_ids=query_input['input_ids'],
-            attention_mask=query_input['attention_mask'],
-            token_type_ids=query_input['token_type_ids'] if 'token_type_ids' in query_input else None
-        )
-        query_emb = query_outputs.last_hidden_state
-        
-        doc_outputs = self.embedding(
-            input_ids=doc_input['input_ids'],
-            attention_mask=doc_input['attention_mask'],
-            token_type_ids=doc_input['token_type_ids'] if 'token_type_ids' in doc_input else None
-        )
-        doc_emb = doc_outputs.last_hidden_state
+        # Get embeddings
+        query_emb = self.embedding(**query_input).last_hidden_state
+        doc_emb = self.embedding(**doc_input).last_hidden_state
         
         # Encode sequences
         query_out, _ = self.query_encoder(query_emb)

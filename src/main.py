@@ -5,42 +5,25 @@ from training import train_model
 from torch.utils.data import DataLoader, TensorDataset
 import torch
 
-def create_dataloader(query_input, pos_input, neg_input, batch_size=32):
-    """Create a DataLoader from tokenized inputs"""
-    dataset = TensorDataset(
-        query_input['input_ids'],
-        query_input['attention_mask'],
-        pos_input['input_ids'],
-        pos_input['attention_mask'],
-        neg_input['input_ids'],
-        neg_input['attention_mask']
-    )
-    return DataLoader(dataset, batch_size=batch_size, shuffle=True)
-
 def main():
     # Load and prepare data
     print("Loading data...")
     dataset = load_msmarco_data()
-    triples = create_triples(dataset[:1000], num_negatives=1)  # Use smaller subset for demo
-    query_input, pos_input, neg_input = tokenize_triples(triples)
+    triples = create_triples(dataset, num_negatives=1)
+    tokenized_triples = tokenize_triples(triples[:10000])  # Use smaller subset for demo
+    
+    # Prepare DataLoaders
+    query_inputs = [t[0] for t in tokenized_triples]
+    pos_inputs = [t[1] for t in tokenized_triples]
+    neg_inputs = [t[2] for t in tokenized_triples]
     
     # Split into train/val
-    split_idx = int(0.8 * len(triples))
+    split_idx = int(0.8 * len(tokenized_triples))
+    train_data = list(zip(query_inputs[:split_idx], pos_inputs[:split_idx], neg_inputs[:split_idx]))
+    val_data = list(zip(query_inputs[split_idx:], pos_inputs[split_idx:], neg_inputs[split_idx:]))
     
-    # Create DataLoaders
-    train_loader = create_dataloader(
-        {k: v[:split_idx] for k, v in query_input.items()},
-        {k: v[:split_idx] for k, v in pos_input.items()},
-        {k: v[:split_idx] for k, v in neg_input.items()},
-        batch_size=32
-    )
-    
-    val_loader = create_dataloader(
-        {k: v[split_idx:] for k, v in query_input.items()},
-        {k: v[split_idx:] for k, v in pos_input.items()},
-        {k: v[split_idx:] for k, v in neg_input.items()},
-        batch_size=32
-    )
+    train_loader = DataLoader(train_data, batch_size=32, shuffle=True)
+    val_loader = DataLoader(val_data, batch_size=32)
     
     # Initialize model
     model = TwoTowerModel()
