@@ -16,6 +16,7 @@ class TripletLoss(nn.Module):
         return losses.mean()
 
 def train_model(model, train_loader, val_loader, num_epochs=5, lr=1e-4):
+
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     model = model.to(device)
     
@@ -63,3 +64,23 @@ def train_model(model, train_loader, val_loader, num_epochs=5, lr=1e-4):
         print(f"Epoch {epoch+1} - Train Loss: {train_loss/len(train_loader):.4f}, Val Loss: {val_loss/len(val_loader):.4f}")
     
     return model
+
+def collate_batch(batch):
+    """Collate function to merge tokenized triples"""
+    query_batch = {}
+    pos_batch = {}
+    neg_batch = {}
+
+    for query, pos, neg in batch:
+        for k in query:
+            query_batch.setdefault(k, []).append(query[k].squeeze(0))
+            pos_batch.setdefault(k, []).append(pos[k].squeeze(0))
+            neg_batch.setdefault(k, []).append(neg[k].squeeze(0))
+
+    # Stack tensors
+    for k in query_batch:
+        query_batch[k] = torch.stack(query_batch[k])
+        pos_batch[k] = torch.stack(pos_batch[k])
+        neg_batch[k] = torch.stack(neg_batch[k])
+
+    return query_batch, pos_batch, neg_batch

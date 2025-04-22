@@ -1,7 +1,2 @@
-torch==2.6
-pandas==2.2.3
-numpy==2.2.5
-scipy==1.15.2
-wandb==0.19.8
-tqdm==4.67.1
-pyarrow==19.0.1
+packaging==25.0
+wheel @ file:///opt/homebrew/Cellar/python%403.13/3.13.2/libexec/wheel-0.45.1-py3-none-any.whl#sha256=b9235939e2096903717cb6bfc132267f8a7e46deb2ec3ef9c5e234ea301795d0

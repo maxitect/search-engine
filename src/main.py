@@ -22,8 +22,9 @@ def main():
     train_data = list(zip(query_inputs[:split_idx], pos_inputs[:split_idx], neg_inputs[:split_idx]))
     val_data = list(zip(query_inputs[split_idx:], pos_inputs[split_idx:], neg_inputs[split_idx:]))
     
-    train_loader = DataLoader(train_data, batch_size=32, shuffle=True)
-    val_loader = DataLoader(val_data, batch_size=32)
+    train_loader = DataLoader(train_data, batch_size=32, shuffle=True, collate_fn=collate_batch)
+    val_loader = DataLoader(val_data, batch_size=32, collate_fn=collate_batch)
+
     
     # Initialize model
     model = TwoTowerModel()
