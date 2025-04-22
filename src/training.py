@@ -4,6 +4,9 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from tqdm import tqdm
+from torch.utils.data import DataLoader
+import wandb
+from datetime import datetime
 
 models_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'models')
 os.makedirs(models_dir, exist_ok=True)
@@ -24,82 +27,135 @@ class TripletLoss(nn.Module):
 
 
 
-def train_model(model, train_loader, val_loader, num_epochs=5, lr=1e-4, checkpoint_path=model_path):
+def train_model(model, train_loader, val_loader, num_epochs=3, checkpoint_dir='checkpoints'):
+    """Train the model with wandb logging and checkpointing"""
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     model = model.to(device)
-
-    criterion = TripletLoss()
-    optimizer = optim.Adam(model.parameters(), lr=lr)
-
-    best_val_loss = float('inf')  # Initialize with a large number
-
+    
+    # Initialize wandb
+    wandb.init(
+        project="search-engine",
+        name=f"training_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
+        config={
+            "learning_rate": 1e-4,
+            "architecture": "TwoTowerModel",
+            "dataset": "MS MARCO",
+            "epochs": num_epochs,
+        }
+    )
+    
+    # Create checkpoint directory
+    os.makedirs(checkpoint_dir, exist_ok=True)
+    
+    # Loss function and optimizer
+    criterion = nn.TripletMarginLoss(margin=1.0)
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
+    
+    best_val_loss = float('inf')
+    
     for epoch in range(num_epochs):
+        # Training phase
         model.train()
         train_loss = 0.0
-
-        for batch in tqdm(train_loader, desc=f"Epoch {epoch+1}"):
-            query_input = {k: v.to(device) for k, v in batch[0].items()}
-            pos_input = {k: v.to(device) for k, v in batch[1].items()}
-            neg_input = {k: v.to(device) for k, v in batch[2].items()}
-
-            optimizer.zero_grad()
-
+        for batch_idx, (query, pos, neg) in enumerate(train_loader):
+            # Move data to device
+            query = {k: v.to(device) for k, v in query.items()}
+            pos = {k: v.to(device) for k, v in pos.items()}
+            neg = {k: v.to(device) for k, v in neg.items()}
+            
             # Forward pass
-            query_repr, pos_repr = model(query_input, pos_input)
-            _, neg_repr = model(query_input, neg_input)
-
+            query_repr, pos_repr = model(query, pos)
+            _, neg_repr = model(query, neg)
+            
             # Compute loss
             loss = criterion(query_repr, pos_repr, neg_repr)
-
+            
             # Backward pass
+            optimizer.zero_grad()
             loss.backward()
             optimizer.step()
-
+            
             train_loss += loss.item()
-
-        # Validation
+            
+            # Log batch loss
+            if batch_idx % 10 == 0:
+                wandb.log({
+                    "train/batch_loss": loss.item(),
+                    "train/batch": batch_idx + epoch * len(train_loader)
+                })
+        
+        # Calculate average training loss
+        avg_train_loss = train_loss / len(train_loader)
+        
+        # Validation phase
         model.eval()
         val_loss = 0.0
         with torch.no_grad():
-            for batch in val_loader:
-                query_input = {k: v.to(device) for k, v in batch[0].items()}
-                pos_input = {k: v.to(device) for k, v in batch[1].items()}
-                neg_input = {k: v.to(device) for k, v in batch[2].items()}
-
-                query_repr, pos_repr = model(query_input, pos_input)
-                _, neg_repr = model(query_input, neg_input)
-
-                val_loss += criterion(query_repr, pos_repr, neg_repr).item()
-
-        avg_train_loss = train_loss / len(train_loader)
+            for query, pos, neg in val_loader:
+                query = {k: v.to(device) for k, v in query.items()}
+                pos = {k: v.to(device) for k, v in pos.items()}
+                neg = {k: v.to(device) for k, v in neg.items()}
+                
+                query_repr, pos_repr = model(query, pos)
+                _, neg_repr = model(query, neg)
+                
+                loss = criterion(query_repr, pos_repr, neg_repr)
+                val_loss += loss.item()
+        
         avg_val_loss = val_loss / len(val_loader)
-
-        print(f"Epoch {epoch+1} - Train Loss: {avg_train_loss:.4f}, Val Loss: {avg_val_loss:.4f}")
-
-        # Save checkpoint if validation loss has improved
+        
+        # Log epoch metrics
+        wandb.log({
+            "train/epoch_loss": avg_train_loss,
+            "val/epoch_loss": avg_val_loss,
+            "epoch": epoch
+        })
+        
+        print(f"Epoch {epoch + 1} - Train Loss: {avg_train_loss:.4f}, Val Loss: {avg_val_loss:.4f}")
+        
+        # Save checkpoint
+        checkpoint = {
+            'epoch': epoch,
+            'model_state_dict': model.state_dict(),
+            'optimizer_state_dict': optimizer.state_dict(),
+            'train_loss': avg_train_loss,
+            'val_loss': avg_val_loss
+        }
+        
+        # Save latest checkpoint
+        torch.save(checkpoint, os.path.join(checkpoint_dir, 'latest_checkpoint.pth'))
+        
+        # Save best model
         if avg_val_loss < best_val_loss:
-            print(f"✅ New best model found at epoch {epoch+1}, saving to {checkpoint_path}")
             best_val_loss = avg_val_loss
-            os.makedirs(os.path.dirname(checkpoint_path), exist_ok=True)
-            torch.save(model.state_dict(), checkpoint_path)
-
+            torch.save(checkpoint, os.path.join(checkpoint_dir, 'best_model.pth'))
+            print(f"✅ New best model found at epoch {epoch + 1}, saving to {os.path.join(checkpoint_dir, 'best_model.pth')}")
+    
+    # Finish wandb run
+    wandb.finish()
+    
     return model
+
 def collate_batch(batch):
-    """Collate function to merge tokenized triples"""
-    query_batch = {}
-    pos_batch = {}
-    neg_batch = {}
-
-    for query, pos, neg in batch:
-        for k in query:
-            query_batch.setdefault(k, []).append(query[k].squeeze(0))
-            pos_batch.setdefault(k, []).append(pos[k].squeeze(0))
-            neg_batch.setdefault(k, []).append(neg[k].squeeze(0))
-
-    # Stack tensors
-    for k in query_batch:
-        query_batch[k] = torch.stack(query_batch[k])
-        pos_batch[k] = torch.stack(pos_batch[k])
-        neg_batch[k] = torch.stack(neg_batch[k])
-
-    return query_batch, pos_batch, neg_batch
+    """Collate function for the DataLoader"""
+    queries = [item[0] for item in batch]
+    positives = [item[1] for item in batch]
+    negatives = [item[2] for item in batch]
+    
+    # Stack the input_ids and attention_masks
+    query_inputs = {
+        'input_ids': torch.stack([q['input_ids'].squeeze(0) for q in queries]),
+        'attention_mask': torch.stack([q['attention_mask'].squeeze(0) for q in queries])
+    }
+    
+    pos_inputs = {
+        'input_ids': torch.stack([p['input_ids'].squeeze(0) for p in positives]),
+        'attention_mask': torch.stack([p['attention_mask'].squeeze(0) for p in positives])
+    }
+    
+    neg_inputs = {
+        'input_ids': torch.stack([n['input_ids'].squeeze(0) for n in negatives]),
+        'attention_mask': torch.stack([n['attention_mask'].squeeze(0) for n in negatives])
+    }
+    
+    return query_inputs, pos_inputs, neg_inputs

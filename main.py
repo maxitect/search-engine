@@ -4,8 +4,12 @@ from src.training import train_model, collate_batch
 from torch.utils.data import DataLoader, TensorDataset
 import torch
 import os
+import wandb
 
 def main():
+    # Initialize wandb
+    wandb.login()
+    
     # Load and prepare data
     print("Loading data...")
     dataset = load_msmarco_data()
@@ -24,28 +28,22 @@ def main():
     
     train_loader = DataLoader(train_data, batch_size=32, shuffle=True, collate_fn=collate_batch)
     val_loader = DataLoader(val_data, batch_size=32, collate_fn=collate_batch)
-
     
     # Initialize model
     model = TwoTowerModel()
     
-    # Train
+    # Train with checkpointing
     print("Training model...")
-    trained_model = train_model(model, train_loader, val_loader, num_epochs=3)
+    trained_model = train_model(
+        model, 
+        train_loader, 
+        val_loader, 
+        num_epochs=3,
+        checkpoint_dir='checkpoints'
+    )
     
-    # Save models
-    models_dir = os.path.join(os.path.dirname(__file__), 'models')
-    os.makedirs(models_dir, exist_ok=True)
-
-    # Save two_tower_model
-    two_tower_path = os.path.join(models_dir, 'two_tower_model.pth')
-    torch.save(trained_model.state_dict(), two_tower_path)
-    
-    # Save best_model
-    best_model_path = os.path.join(models_dir, 'best_model.pth')
-    torch.save(trained_model.state_dict(), best_model_path)
-   
-    print(f"Models saved in {models_dir}!")
+    print("Training complete! Checkpoints saved in 'checkpoints' directory")
+    print("You can view training metrics at wandb.ai")
 
 if __name__ == "__main__":
     main() 
