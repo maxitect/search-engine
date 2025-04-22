@@ -10,6 +10,8 @@ from functools import partial
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
 from engine.utils import get_device
+import os
+from datetime import datetime
 
 def run_sanity_check(
     q_vectors, pos_vectors, neg_vectors,
@@ -196,14 +198,7 @@ class Trainer:
                 logger.info(f'  batch {batch_idx + 1} loss: {last_loss} accuracy: {accuracy}')
                 running_loss = 0.
 
-        checkpoint = {
-            'query_encoder_state_dict': query_encoder.state_dict(),
-            'doc_encoder_state_dict': doc_encoder.state_dict(),
-            'optimiser_state_dict': optimiser.state_dict(),
-            'last_loss': last_loss,
-        }
-
-        return checkpoint
+        return last_loss, accuracy
 
     def validate(
         self,
@@ -211,8 +206,11 @@ class Trainer:
         doc_encoder: Encoder,
         loss_fn: TripletLoss,
     ):
-        running_loss = 0.
-        last_loss = 0.
+
+        losses = []
+
+        accuracies = []
+
         with torch.no_grad():
             for batch_idx, batch in enumerate(tqdm(self.val_dl)):
                 # Zero your gradients for every batch!
@@ -238,39 +236,49 @@ class Trainer:
                 neg_vectors.permute(0, 2, 1),
             )
 
-            # Gather data and report
-            running_loss += loss.item()
-            if batch_idx % batches_print_frequency == (batches_print_frequency - 1):
-                accuracy = run_sanity_check(
+
+            accuracy = run_sanity_check(
                     q_vectors, pos_vectors, neg_vectors,
                 )
+            accuracies.append(accuracy)
+            losses.append(loss.item())
 
-                # loss per batch
-                last_loss = running_loss / batches_print_frequency
-                logger.info(f'  batch {batch_idx + 1} loss: {last_loss} accuracy: {accuracy}')
-                running_loss = 0.
-
-        checkpoint = {
-            'query_encoder_state_dict': query_encoder.state_dict(),
-            'doc_encoder_state_dict': doc_encoder.state_dict(),
-            'optimiser_state_dict': optimiser.state_dict(),
-            'last_loss': last_loss,
-        }
-
-        return
+        return sum(losses)/len(losses), sum(accuracies)/len(accuracies)
 
     def train(self, epochs: int):
 
         for epoch in range(epochs):
             logger.info(f'Epoch {epoch + 1} of {epochs}')
-            checkpoint = self.train_one_epoch(
+            train_loss, train_accuracy = self.train_one_epoch(
                 query_encoder, doc_encoder,
                 triplet_loss, optimiser,
             )
 
-            # Run validation
-            # if self.log_to_wandb:
-            #         wandb.log({'train/loss': last_loss})
+            val_loss, val_accuracy = self.validate(
+                query_encoder, doc_encoder,
+                triplet_loss,
+            )
+            logger.info(f'Epoch {epoch + 1} of {epochs} train loss: {train_loss} train accuracy: {train_accuracy} val loss: {val_loss} val accuracy: {val_accuracy}')
+            if self.log_to_wandb:   
+                wandb.log({
+                    'train/loss': train_loss,
+                    'train/accuracy': train_accuracy,
+                    'val/loss': val_loss,
+                    'val/accuracy': val_accuracy,
+                })
+
+                checkpoint = {
+                'query_encoder_state_dict': query_encoder.state_dict(),
+                'doc_encoder_state_dict': doc_encoder.state_dict(),
+                'optimiser_state_dict': optimiser.state_dict(),
+            }
+                checkpoint_path = os.path.join(
+                wandb.run.dir, f'{datetime.now().strftime("%Y%m%d_%H%M%S")}.pth',
+            )
+                torch.save(checkpoint, checkpoint_path)
+                artifact = wandb.Artifact(f'towers_mlp', type='checkpoint')
+                artifact.add_file(checkpoint_path)
+                wandb.run.log_artifact(artifact)
 
 
 if __name__ == '__main__':
