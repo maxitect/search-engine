@@ -23,7 +23,23 @@ def load_relevant_docs():
     
     return relevant_docs
 
-def evaluate_search_engine(search_engine, test_queries, relevant_docs, top_k=5):
+def load_document_texts():
+    """Load all document texts from the dataset"""
+    dataset = load_msmarco_data()
+    documents = []
+    doc_ids = []
+    
+    # Process the training set to get all documents
+    for example in dataset['train']:
+        passages = example['passages']['passage_text']
+        for i, passage in enumerate(passages):
+            doc_id = f"doc_{len(documents)}"
+            documents.append(passage)
+            doc_ids.append(doc_id)
+    
+    return documents, doc_ids
+
+def evaluate_search_engine(search_engine, test_queries, relevant_docs, documents, doc_ids, top_k=5):
     """Evaluate the search engine's performance"""
     metrics = {
         'precision@k': [],
@@ -31,6 +47,9 @@ def evaluate_search_engine(search_engine, test_queries, relevant_docs, top_k=5):
         'f1@k': [],
         'average_precision': []
     }
+    
+    # Create a mapping from document text to document ID
+    doc_text_to_id = {text: doc_id for text, doc_id in zip(documents, doc_ids)}
     
     for query in tqdm(test_queries, desc="Evaluating queries"):
         if query not in relevant_docs:
@@ -43,11 +62,8 @@ def evaluate_search_engine(search_engine, test_queries, relevant_docs, top_k=5):
         # Get ground truth
         relevant_doc_ids = set()
         for passage in relevant_docs[query]:
-            # Find the document ID for this passage
-            for doc_id, doc_text in zip(search_engine.doc_ids, search_engine.documents):
-                if doc_text == passage:
-                    relevant_doc_ids.add(doc_id)
-                    break
+            if passage in doc_text_to_id:
+                relevant_doc_ids.add(doc_text_to_id[passage])
         
         # Calculate metrics
         relevant_retrieved = len(set(retrieved_docs) & relevant_doc_ids)
@@ -93,6 +109,10 @@ def main():
     cache_path = os.path.join('models', 'document_cache.pth')
     search_engine.load_cache(cache_path)
     
+    # Load document texts and IDs
+    print("Loading document texts...")
+    documents, doc_ids = load_document_texts()
+    
     # Load relevant documents
     print("Loading relevant documents...")
     relevant_docs = load_relevant_docs()
@@ -102,7 +122,7 @@ def main():
     
     # Evaluate the search engine
     print("\nEvaluating search engine...")
-    metrics = evaluate_search_engine(search_engine, test_queries, relevant_docs)
+    metrics = evaluate_search_engine(search_engine, test_queries, relevant_docs, documents, doc_ids)
     
     # Print results
     print("\nEvaluation Results:")
