@@ -4,12 +4,21 @@ from typing import List, Tuple
 from transformers import AutoTokenizer
 import os
 from tqdm import tqdm
+from src.model import TwoTowerModel
 
 class SearchEngine:
     def __init__(self, model_path: str, model_name: str = 'bert-base-uncased'):
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.tokenizer = AutoTokenizer.from_pretrained(model_name)
-        self.model = torch.load(model_path, map_location=self.device)
+        
+        # Initialize the model architecture
+        self.model = TwoTowerModel(model_name=model_name)
+        
+        # Load the state dictionary
+        state_dict = torch.load(model_path, map_location=self.device)
+        self.model.load_state_dict(state_dict)
+        
+        self.model.to(self.device)
         self.model.eval()
         self.doc_encodings = None
         self.doc_ids = None
