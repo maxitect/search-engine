@@ -1,49 +1,48 @@
 import datetime
-import requests
 import torch
 import wandb
 import pickle
+import pandas as pd
 from tqdm import tqdm
 import os
-from dataset import MSMARCODataset, generate_triplets
 import src.model as model
 import src.config as config
-from torch.utils.data import random_split
+from src.dataset import MSMARCODataset, generate_triplets
+from src.evaluate import evaluate_progress
 
 # Device configuration
 dev = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 ts = datetime.datetime.now().strftime('%Y_%m_%d__%H_%M_%S')
 
-# Load vocabulary and dataset
+# Load vocabulary
 vocab_to_int = pickle.load(open(config.VOCAB_TO_ID_PATH, 'rb'))
-int_to_vocab = pickle.load(open(config.ID_TO_VOCAB_PATH, 'rb'))
 
-# Download MS MARCO dataset
-print("Downloading MS MARCO dataset...")
-r = requests.get(
-    "https://huggingface.co/datasets/microsoft/ms_marco/resolve/main/v1.1/train-00000-of-00001.parquet"
+# Load data from parquet files
+train_df = pd.read_parquet('ms_marco_train.parquet')
+val_df = pd.read_parquet('ms_marco_validation.parquet')
+
+# Create datasets
+train_dataset = MSMARCODataset(
+    queries=train_df['queries'].tolist(),
+    documents=train_df['documents'].tolist(),
+    labels=train_df['labels'].tolist(),
+    vocab_to_int=vocab_to_int,
+    max_query_len=config.MAX_QUERY_LEN,
+    max_doc_len=config.MAX_DOC_LEN
 )
-with open("ms_marco_train.parquet", "wb") as f:
-    f.write(r.content)
 
-
-queries = []
-documents = []
-labels = []
-# Load your actual data here
-# ...
-
-# Create dataset
-dataset = MSMARCODataset(queries, documents, labels, vocab_to_int)
-
-# Split dataset
-train_size = int(0.8 * len(dataset))
-val_size = len(dataset) - train_size
-train_dataset, val_dataset = random_split(dataset, [train_size, val_size])
+val_dataset = MSMARCODataset(
+    queries=train_df['queries'].tolist(),
+    documents=train_df['documents'].tolist(),
+    labels=train_df['labels'].tolist(),
+    vocab_to_int=vocab_to_int,
+    max_query_len=config.MAX_QUERY_LEN,
+    max_doc_len=config.MAX_DOC_LEN
+)
 
 # Generate triplets
-train_triplets = generate_triplets(train_dataset, config.BATCH_SIZE)
-val_triplets = generate_triplets(val_dataset, config.BATCH_SIZE)
+train_triplets = generate_triplets(train_dataset, config.TWOTOWERS_BATCH_SIZE)
+val_triplets = generate_triplets(val_dataset, config.TWOTOWERS_BATCH_SIZE)
 
 # Load pretrained SkipGram model
 skipgram = model.SkipGram(len(vocab_to_int), config.EMBEDDING_DIM)
@@ -97,7 +96,7 @@ for epoch in range(config.EPOCHS):
     train_loss = 0
 
     progress = tqdm(train_triplets, desc=f'Epoch {epoch+1} (Train)')
-    for query, pos_doc, neg_doc in progress:
+    for step, (query, pos_doc, neg_doc) in enumerate(progress):
         query = query.to(dev)
         pos_doc = pos_doc.to(dev)
         neg_doc = neg_doc.to(dev)
@@ -120,6 +119,9 @@ for epoch in range(config.EPOCHS):
         train_loss += loss.item()
         progress.set_postfix({'loss': loss.item()})
 
+        if step % 10000 == 0:
+            evaluate_progress(qry_tower, doc_tower, step + 1)
+
     avg_train_loss = train_loss / len(train_triplets)
 
     # Validation
@@ -128,7 +130,8 @@ for epoch in range(config.EPOCHS):
 
     with torch.no_grad():
         for query, pos_doc, neg_doc in tqdm(
-            val_triplets, desc=f'Epoch {epoch+1} (Val)'
+            val_triplets,
+            desc=f'Epoch {epoch+1} (Val)'
         ):
             query = query.to(dev)
             pos_doc = pos_doc.to(dev)
