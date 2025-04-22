@@ -121,31 +121,63 @@ class MSMARCODataset(Dataset):
         return torch.tensor(ids)
 
 
+def custom_collate_fn(batch):
+    batch_dict = {
+        'query_ids': [],
+        'doc_ids': [],
+        'label': []
+    }
+
+    for sample in batch:
+        # Each sample has query_ids, doc_ids (possibly a list), and label
+        # (possibly a list)
+        batch_dict['query_ids'].append(sample['query_ids'])
+
+        # If doc_ids is a list of tensors, we'll process each one separately
+        if isinstance(sample['doc_ids'], list):
+            for doc, lab in zip(sample['doc_ids'], sample['label']):
+                batch_dict['query_ids'].append(
+                    sample['query_ids'])  # Repeat the query
+                batch_dict['doc_ids'].append(doc)
+                batch_dict['label'].append(lab)
+        else:
+            # Just a single document
+            batch_dict['doc_ids'].append(sample['doc_ids'])
+            batch_dict['label'].append(sample['label'])
+
+    # Stack the tensors
+    result = {
+        'query_ids': torch.stack(batch_dict['query_ids']),
+        'doc_ids': torch.stack(batch_dict['doc_ids']),
+        'label': torch.tensor(batch_dict['label'])
+    }
+
+    return result
+
+
 def generate_triplets(dataset, batch_size):
-    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
+    dataloader = DataLoader(
+        dataset,
+        batch_size=batch_size,
+        shuffle=True,
+        collate_fn=custom_collate_fn
+    )
     triplets = []
 
     for batch in dataloader:
         queries = batch['query_ids']
-        docs_lists = batch['doc_ids_list']
-        labels_lists = batch['labels']
+        docs = batch['doc_ids']
+        labels = batch['label']
 
-        # For each query
+        # For each query, find a positive and negative document
         for i in range(len(queries)):
             query = queries[i]
-            docs = docs_lists[i]
-            doc_labels = labels_lists[i]
-
-            # Find positive and negative documents
-            pos_indices = [j for j, label in enumerate(
-                doc_labels) if label == 1]
-            neg_indices = [j for j, label in enumerate(
-                doc_labels) if label == 0]
+            pos_indices = [j for j in range(len(labels)) if labels[j] == 1]
+            neg_indices = [j for j in range(len(labels)) if labels[j] == 0]
 
             if pos_indices and neg_indices:
-                pos_idx = pos_indices[0]  # Get first positive document
-                neg_idx = neg_indices[0]  # Get first negative document
-
+                pos_idx = pos_indices[0]
+                neg_idx = neg_indices[0]
                 triplets.append((query, docs[pos_idx], docs[neg_idx]))
 
     return triplets
