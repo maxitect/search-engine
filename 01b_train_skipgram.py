@@ -9,6 +9,8 @@ import src.config as config
 import os
 import argparse
 
+from src.utils.lr_scheduler import get_lr_scheduler
+
 
 def main():
     parser = argparse.ArgumentParser(description='Train SkipGram model')
@@ -39,6 +41,7 @@ def main():
 
     start_epoch = 0
     best_loss = float('inf')
+    global_step = 0
 
     if args.resume and args.artifact_version:
         print(f"Resuming training from artifact {args.artifact_version}")
@@ -60,7 +63,8 @@ def main():
         try:
             epoch_from_filename = int(pth_files[0].split('.')[0])
             start_epoch = epoch_from_filename
-            print(f"Resuming from epoch {start_epoch}")
+            global_step = start_epoch * len(dl)
+            print(f"Resuming from epoch {start_epoch}, step {global_step}")
         except ValueError:
             print(
                 "Couldn't determine epoch from filename, starting from epoch 0"
@@ -68,10 +72,19 @@ def main():
 
     mFoo.to(dev)
     opFoo = torch.optim.Adam(mFoo.parameters(), lr=config.SKIPGRAM_LR)
+
+    total_steps = config.SKIPGRAM_EPOCHS * len(dl)
+    scheduler = get_lr_scheduler(
+        opFoo,
+        config.SKIPGRAM_LR_SCHEDULE,
+        warmup_steps=config.SKIPGRAM_WARMUP_STEPS,
+        total_steps=total_steps
+    )
+
     criterion = torch.nn.CrossEntropyLoss()
 
-    run_name = f'{ts}_resumed' if args.resume else ts
-    wandb.init(project='mlx7-week1-skipgram', name=run_name)
+    run_name = f'skipgram_{ts}_resumed' if args.resume else f'skipgram_{ts}'
+    wandb.init(project='search-engine', name=run_name)
 
     for epoch in range(start_epoch, config.SKIPGRAM_EPOCHS):
         epoch_loss = 0
@@ -85,10 +98,16 @@ def main():
             loss.backward()
             opFoo.step()
 
+            if scheduler:
+                scheduler.step()
+                current_lr = scheduler.get_last_lr()[0]
+                wandb.log({'learning_rate': current_lr})
+
             epoch_loss += loss.item()
             batch_count += 1
+            global_step += 1
 
-            wandb.log({'loss': loss.item()})
+            wandb.log({'loss': loss.item(), 'step': global_step})
             if i % 10_000 == 0:
                 evaluate.topk(mFoo)
 
