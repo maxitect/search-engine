@@ -38,7 +38,7 @@ def main():
         model, 
         train_loader, 
         val_loader, 
-        num_epochs=3,
+        num_epochs=5,
         checkpoint_dir='checkpoints'
     )
     
