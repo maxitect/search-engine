@@ -4,6 +4,7 @@ from model import TwoTowerModel
 from training import train_model, collate_batch
 from torch.utils.data import DataLoader, TensorDataset
 import torch
+import os
 
 def main():
     # Load and prepare data
@@ -34,7 +35,12 @@ def main():
     trained_model = train_model(model, train_loader, val_loader, num_epochs=3)
     
     # Save model
-    torch.save(trained_model.state_dict(), '../models/two_tower_model.pth')
+    models_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'models')
+    os.makedirs(models_dir, exist_ok=True)
+
+    model_path = os.path.join(models_dir, 'two_tower_model.pth')
+    torch.save(trained_model.state_dict(), model_path)
+   
     print("Model saved!")
 
 if __name__ == "__main__":
