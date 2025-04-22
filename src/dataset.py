@@ -3,6 +3,8 @@ import torch
 from torch.utils.data import Dataset, DataLoader
 import pickle
 
+from utils.tokenise import preprocess
+
 
 class Wiki(Dataset):
     def __init__(self, skip_gram=True):
@@ -72,9 +74,9 @@ class MSMARCODataset(Dataset):
         doc = self.documents[idx]
         label = self.labels[idx]
 
-        # Tokenize and convert to IDs
-        query_ids = self._tokenize(query, self.max_query_len)
-        doc_ids = self._tokenize(doc, self.max_doc_len)
+        # Tokenise and convert to IDs
+        query_ids = self._tokenise(query, self.max_query_len)
+        doc_ids = self._tokenise(doc, self.max_doc_len)
 
         return {
             'query_ids': query_ids,
@@ -82,8 +84,8 @@ class MSMARCODataset(Dataset):
             'label': label
         }
 
-    def _tokenize(self, text, max_len):
-        tokens = text.lower().split()
+    def _tokenise(self, text, max_len):
+        tokens = preprocess(text)
         ids = [self.vocab_to_int.get(token, self.vocab_to_int['<UNK>'])
                for token in tokens[:max_len]]
         # Pad sequence
