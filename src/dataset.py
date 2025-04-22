@@ -1,10 +1,10 @@
 import src.config as config
 import torch
+from torch.utils.data import Dataset, DataLoader
 import pickle
-import datetime
 
 
-class Wiki(torch.utils.data.Dataset):
+class Wiki(Dataset):
     def __init__(self, skip_gram=True):
         self.vocab_to_int = pickle.load(
             open(config.VOCAB_TO_ID_PATH, 'rb'))
@@ -47,61 +47,69 @@ class Wiki(torch.utils.data.Dataset):
             return torch.tensor(prv + nex), torch.tensor([ipt])
 
 
-class HackerNewsDataset(torch.utils.data.Dataset):
+class MSMARCODataset(Dataset):
     def __init__(
             self,
-            titles,
-            domains,
-            timestamps,
-            scores,
+            queries,
+            documents,
+            labels,
             vocab_to_int,
-            max_title_len=100
+            max_query_len=20,
+            max_doc_len=200
     ):
-        self.titles = titles
-        self.domains = domains
-        self.timestamps = timestamps
-        self.scores = scores
+        self.queries = queries
+        self.documents = documents
+        self.labels = labels
         self.vocab_to_int = vocab_to_int
-        self.max_title_len = max_title_len
-
-        self.domain_to_idx = {d: i+1 for i, d in enumerate(set(domains))}
-        self.domain_to_idx['<UNK>'] = 0
+        self.max_query_len = max_query_len
+        self.max_doc_len = max_doc_len
 
     def __len__(self):
-        return len(self.titles)
+        return len(self.queries)
 
     def __getitem__(self, idx):
-        title = self.titles[idx]
-        domain = self.domains[idx]
-        timestamp = self.timestamps[idx]
-        score = self.scores[idx]
+        query = self.queries[idx]
+        doc = self.documents[idx]
+        label = self.labels[idx]
 
-        title_tokens = title.lower().split()
-        title_ids = []
-        for word in title_tokens[:self.max_title_len]:
-            if word in self.vocab_to_int:
-                title_ids.append(self.vocab_to_int[word])
-            else:
-                title_ids.append(0)
-
-        if len(title_ids) < self.max_title_len:
-            title_ids.extend([0] * (self.max_title_len - len(title_ids)))
-
-        domain_idx = self.domain_to_idx.get(domain, 0)
-
-        dt = datetime.datetime.fromisoformat(timestamp)
-        day_of_week = dt.weekday()
-        hour_of_day = dt.hour
-
-        time_feats = torch.tensor(
-            [day_of_week/6, hour_of_day/23], dtype=torch.float32)
-        title_length = torch.tensor(
-            min(len(title), 200)/200, dtype=torch.float32)
+        # Tokenize and convert to IDs
+        query_ids = self._tokenize(query, self.max_query_len)
+        doc_ids = self._tokenize(doc, self.max_doc_len)
 
         return {
-            'title_ids': torch.tensor(title_ids),
-            'domain_idx': torch.tensor(domain_idx),
-            'time_feats': time_feats,
-            'title_length': title_length,
-            'score': torch.tensor(score, dtype=torch.float32)
+            'query_ids': query_ids,
+            'doc_ids': doc_ids,
+            'label': label
         }
+
+    def _tokenize(self, text, max_len):
+        tokens = text.lower().split()
+        ids = [self.vocab_to_int.get(token, self.vocab_to_int['<UNK>'])
+               for token in tokens[:max_len]]
+        # Pad sequence
+        if len(ids) < max_len:
+            ids = ids + [self.vocab_to_int['<PAD>']] * (max_len - len(ids))
+        return torch.tensor(ids)
+
+
+def generate_triplets(dataset, batch_size):
+    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
+    triplets = []
+
+    for batch in dataloader:
+        queries = batch['query_ids']
+        docs = batch['doc_ids']
+        labels = batch['label']
+
+        # For each query, find a positive and negative document
+        for i in range(len(queries)):
+            query = queries[i]
+            pos_indices = [j for j in range(len(labels)) if labels[j] == 1]
+            neg_indices = [j for j in range(len(labels)) if labels[j] == 0]
+
+            if pos_indices and neg_indices:
+                pos_idx = pos_indices[0]
+                neg_idx = neg_indices[0]
+                triplets.append((query, docs[pos_idx], docs[neg_idx]))
+
+    return triplets
