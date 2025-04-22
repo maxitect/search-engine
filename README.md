@@ -51,6 +51,10 @@ wandb login
 huggingface-cli login
 ```
 
+### Todo:
+
+Precompute all word vectors using the skipgram model and save as a dictionary
+
 https://www.anaconda.com/docs/getting-started/miniconda/install#linux
 
 Setup your HF tokens

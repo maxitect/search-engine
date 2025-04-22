@@ -48,7 +48,7 @@ class MSMarcoDataset(Dataset):
         """ Get training instance
 
         Returns a tuple of (query: str,
-            positive_answer: List[str],
+            positive_answer: str,
             negative_answers: List[str])
         """
         # Want positive and negative samples
@@ -57,6 +57,7 @@ class MSMarcoDataset(Dataset):
         assert num_hard_negatives < self.num_negative_samples, (
             'Num negatives is less than num hard negatives'
         )
+
         num_random_negatives = self.num_negative_samples - num_hard_negatives
         random_answers = self._get_random_negative_samples(
             idx,
@@ -81,7 +82,8 @@ class MSMarcoDataset(Dataset):
                 positive_answer.append(text)
             else:
                 negative_answers.append(text)
-        return query, positive_answer, negative_answers
+        assert len(positive_answer) == 1, 'Only one positive answer'
+        return query, positive_answer[0], negative_answers
 
     def rows_k_answers(self, ds, k=1):
         # Returns sorted list of rows with k answers
