@@ -97,7 +97,7 @@ def get_similar_words(model, word, word2idx, idx2word, top_k=5):
     return similar_words
 
 class CBOW(nn.Module):
-    def __init__(self, vocab_size, embedding_dim=100):
+    def __init__(self, vocab_size, embedding_dim=300):
         super().__init__()
         self.embeddings = nn.Embedding(vocab_size, embedding_dim)
         self.linear = nn.Linear(embedding_dim, vocab_size)
@@ -111,8 +111,8 @@ def train():
     wandb.init(project="word2vec-cbow", config={
         "architecture": "CBOW",
         "dataset": "text8+MS-MARCO",
-        "embedding_dim": 100,
-        "window_size": 2,
+        "embedding_dim": 300,
+        "window_size": 3,
         "batch_size": 1024,
         "test_size": 0.1
     })
