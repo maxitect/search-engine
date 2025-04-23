@@ -19,7 +19,7 @@ def get_combined_words():
     msmarco_words = []
     for example in tqdm(dataset, desc="Processing MS-MARCO"):
         # Take first 2 passages from each example
-        passages = example['passages']['passage_text'][:2]
+        passages = example['passages']['passage_text']
         for passage in passages:
             msmarco_words.extend(passage.lower().split())
     
