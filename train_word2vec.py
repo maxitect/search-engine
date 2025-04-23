@@ -6,6 +6,7 @@ from collections import Counter
 import numpy as np
 from tqdm import tqdm
 import wandb
+import os
 
 def get_combined_words():
     """Loads text8 + MS-MARCO passages into a single word list"""
@@ -18,12 +19,32 @@ def get_combined_words():
     dataset = load_dataset("ms_marco", "v1.1", split="train[:100%]")
     msmarco_words = []
     for example in tqdm(dataset, desc="Processing MS-MARCO"):
-        # Take first 2 passages from each example
         passages = example['passages']['passage_text']
         for passage in passages:
             msmarco_words.extend(passage.lower().split())
     
     return text8_words + msmarco_words
+
+def get_similar_words(model, word, word2idx, idx2word, top_k=5):
+    """Get similar words using cosine similarity"""
+    if word not in word2idx:
+        return f"Word '{word}' not in vocabulary"
+    
+    word_idx = word2idx[word]
+    word_embedding = model.embeddings.weight[word_idx]
+    
+    # Calculate cosine similarity with all words
+    similarities = torch.nn.functional.cosine_similarity(
+        word_embedding.unsqueeze(0),
+        model.embeddings.weight,
+        dim=1
+    )
+    
+    # Get top k similar words (excluding the word itself)
+    top_k_indices = torch.topk(similarities, k=top_k+1)[1][1:]  # +1 to exclude the word itself
+    similar_words = [idx2word[idx.item()] for idx in top_k_indices]
+    
+    return similar_words
 
 class CBOW(nn.Module):
     def __init__(self, vocab_size, embedding_dim=100):
@@ -42,8 +63,12 @@ def train():
         "dataset": "text8+MS-MARCO",
         "embedding_dim": 100,
         "window_size": 2,
-        "batch_size": 1024
+        "batch_size": 1024,
+        "test_size": 0.1
     })
+    
+    # Create data directory if it doesn't exist
+    os.makedirs("data/word2vec", exist_ok=True)
     
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
@@ -56,7 +81,9 @@ def train():
     print("Building vocabulary...")
     word_counts = Counter(words)
     vocab = [word for word, count in word_counts.items() if count >= 5]
+    print(f"Vocabulary size: {len(vocab)}")
     word2idx = {word: idx for idx, word in enumerate(vocab)}
+    idx2word = {idx: word for word, idx in word2idx.items()}
     
     # 3. Prepare CBOW training data
     print("Preparing training data...")
@@ -71,6 +98,12 @@ def train():
                 word2idx[target]
             ))
     
+    # Split data into train and test sets
+    np.random.shuffle(train_data)
+    split_idx = int(len(train_data) * 0.9)  # 90% train, 10% test
+    train_set = train_data[:split_idx]
+    test_set = train_data[split_idx:]
+    
     # 4. Initialize model
     model = CBOW(len(vocab)).to(device)
     optimizer = optim.Adam(model.parameters(), lr=0.001)
@@ -82,16 +115,17 @@ def train():
     
     for epoch in range(num_epochs):
         model.train()
-        np.random.shuffle(train_data)
+        np.random.shuffle(train_set)
         total_loss = 0
         correct = 0
         total = 0
         
-        with tqdm(range(0, len(train_data), batch_size)) as pbar:
-            pbar.set_description(f"Epoch {epoch+1}/{num_epochs}")
+        # Training phase
+        with tqdm(range(0, len(train_set), batch_size)) as pbar:
+            pbar.set_description(f"Epoch {epoch+1}/{num_epochs} - Training")
             
             for i in pbar:
-                batch = train_data[i:i+batch_size]
+                batch = train_set[i:i+batch_size]
                 if not batch:
                     continue
                     
@@ -105,46 +139,68 @@ def train():
                 loss.backward()
                 optimizer.step()
                 
-                # Calculate accuracy
                 _, predicted = torch.max(outputs.data, 1)
                 total += target_tensor.size(0)
                 correct += (predicted == target_tensor).sum().item()
-                
                 total_loss += loss.item()
                 
-                # Update progress bar
                 pbar.set_postfix({
                     "loss": f"{total_loss/(i/batch_size + 1):.2f}",
                     "acc": f"{100*correct/total:.1f}%"
                 })
+        
+        # Evaluation phase
+        model.eval()
+        test_loss = 0
+        test_correct = 0
+        test_total = 0
+        
+        with torch.no_grad():
+            for i in range(0, len(test_set), batch_size):
+                batch = test_set[i:i+batch_size]
+                if not batch:
+                    continue
+                    
+                contexts, targets = zip(*batch)
+                context_tensor = torch.LongTensor(contexts).to(device)
+                target_tensor = torch.LongTensor(targets).to(device)
                 
-                # Log to wandb
-                wandb.log({
-                    "batch_loss": loss.item(),
-                    "batch_accuracy": 100*correct/total,
-                    "epoch": epoch + (i/len(train_data))
-                })
+                outputs = model(context_tensor)
+                loss = criterion(outputs, target_tensor)
+                
+                _, predicted = torch.max(outputs.data, 1)
+                test_total += target_tensor.size(0)
+                test_correct += (predicted == target_tensor).sum().item()
+                test_loss += loss.item()
+        
+        # Log metrics to wandb
+        wandb.log({
+            "train_loss": total_loss/len(train_set),
+            "train_accuracy": 100*correct/total,
+            "test_loss": test_loss/len(test_set),
+            "test_accuracy": 100*test_correct/test_total,
+            "epoch": epoch
+        })
+        
+        # Test word similarity
+        test_word = "king"
+        similar_words = get_similar_words(model, test_word, word2idx, idx2word)
+        print(f"\nEpoch {epoch+1} - Similar words to '{test_word}': {similar_words}")
         
         # Save checkpoint
         torch.save({
             'epoch': epoch,
             'model_state_dict': model.state_dict(),
             'optimizer_state_dict': optimizer.state_dict(),
-            'loss': total_loss/len(train_data),
-        }, f"checkpoint_epoch_{epoch}.pt")
-        
-        # Log epoch loss to wandb
-        wandb.log({
-            "epoch_loss": total_loss/len(train_data),
-            "epoch_accuracy": 100*correct/total,
-            "epoch": epoch
-        })
+            'train_loss': total_loss/len(train_set),
+            'test_loss': test_loss/len(test_set)
+        }, f"data/word2vec/checkpoint_epoch_{epoch}.pt")
     
     # 6. Save final embeddings
     torch.save({
         'embeddings': model.embeddings.weight.data.cpu().numpy(),
         'vocab': vocab
-    }, "word2vec_cbow_final.pt")
+    }, "data/word2vec/word2vec_cbow_final.pt")
     
     wandb.finish()
     print("Training complete!")
