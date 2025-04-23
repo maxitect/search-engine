@@ -8,23 +8,55 @@ from tqdm import tqdm
 import wandb
 import os
 import re
+import collections
 
-def clean_word(word):
-    """Clean a word by removing punctuation and converting to lowercase"""
-    # Remove punctuation and special characters
-    word = re.sub(r'[^\w\s]', '', word)
-    # Convert to lowercase
-    word = word.lower()
-    # Remove any remaining whitespace
-    word = word.strip()
-    return word
+def preprocess(text: str, min_count=5) -> list[str]:
+    """Enhanced text preprocessing for Word2Vec"""
+    # Standardize and protect punctuation
+    text = text.lower()
+    replacements = {
+        '.': ' <PERIOD> ',
+        ',': ' <COMMA> ',
+        '"': ' <QUOTATION_MARK> ',
+        ';': ' <SEMICOLON> ',
+        '!': ' <EXCLAMATION_MARK> ',
+        '?': ' <QUESTION_MARK> ',
+        '(': ' <LEFT_PAREN> ',
+        ')': ' <RIGHT_PAREN> ',
+        '--': ' <HYPHENS> ',
+        ':': ' <COLON> ',
+        "'": " <APOSTROPHE> ",
+        "\n": " <NEWLINE> "
+    }
+    
+    for k, v in replacements.items():
+        text = text.replace(k, v)
+    
+    # Remove remaining special characters (except protected ones)
+    text = re.sub(r'[^a-z0-9<>\s]', ' ', text)
+    
+    # Handle contractions and possessives
+    text = re.sub(r"(\w+)'s", r"\1 's", text)
+    text = re.sub(r"(\w+)n't", r"\1 n't", text)
+    text = re.sub(r"(\w+)'re", r"\1 're", text)
+    
+    # Split and filter
+    words = text.split()
+    word_counts = collections.Counter(words)
+    
+    # Keep only frequent words and protected tokens
+    keep_words = {word for word, count in word_counts.items() 
+                 if (count >= min_count) or word.startswith('<')}
+    
+    return [word for word in words if word in keep_words]
 
 def get_combined_words():
     """Loads text8 + MS-MARCO passages into a single word list"""
     # 1. Load text8
+    print("Loading text8 dataset...")
     with open("data/text8", "r") as f:
-        text8_words = [clean_word(word) for word in f.read().split()]
-        text8_words = [word for word in text8_words if word]  # Remove empty strings
+        text8_text = f.read()
+        text8_words = preprocess(text8_text)
     
     # 2. Load MS-MARCO passages
     print("Loading MS-MARCO passages...")
@@ -33,12 +65,15 @@ def get_combined_words():
     for example in tqdm(dataset, desc="Processing MS-MARCO"):
         passages = example['passages']['passage_text']
         for passage in passages:
-            # Clean and filter words
-            words = [clean_word(word) for word in passage.split()]
-            words = [word for word in words if word]  # Remove empty strings
-            msmarco_words.extend(words)
+            processed_words = preprocess(passage)
+            msmarco_words.extend(processed_words)
     
-    return text8_words + msmarco_words
+    # Combine and filter words
+    all_words = text8_words + msmarco_words
+    word_counts = Counter(all_words)
+    filtered_words = [word for word in all_words if word_counts[word] >= 5]
+    
+    return filtered_words
 
 def get_similar_words(model, word, word2idx, idx2word, top_k=5):
     """Get similar words using cosine similarity"""
