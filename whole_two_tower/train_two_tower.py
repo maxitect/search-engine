@@ -65,8 +65,14 @@ def create_negative_samples(batch):
     }
 
 def train_model(config):
-    # Initialize wandb
-    wandb.init(project="two-tower-search", config=config)
+    # Initialize wandb with explicit settings
+    wandb.init(
+        project="two-tower-search",
+        config=config,
+        name=f"two_tower_{time.strftime('%Y%m%d_%H%M%S')}",
+        save_code=True,
+        sync_tensorboard=True
+    )
     
     # Set device
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -159,14 +165,15 @@ def train_model(config):
                 avg_grad_norm = np.mean(grad_norms[-log_interval:])
                 avg_batch_time = np.mean(batch_times[-log_interval:])
                 
+                # Log to wandb with explicit step
                 wandb.log({
-                    'epoch': epoch + 1,
-                    'batch': batch_count,
-                    'train_loss': avg_train_loss,
-                    'grad_norm': avg_grad_norm,
-                    'batch_time': avg_batch_time,
-                    'learning_rate': optimizer.param_groups[0]['lr']
-                })
+                    'train/batch_loss': avg_train_loss,
+                    'train/grad_norm': avg_grad_norm,
+                    'train/batch_time': avg_batch_time,
+                    'train/learning_rate': optimizer.param_groups[0]['lr'],
+                    'train/batch': batch_count,
+                    'train/epoch': epoch + 1
+                }, step=batch_count + epoch * train_batches_per_epoch)
             
             # Run intermediate test
             if batch_count % test_interval == 0:
@@ -185,10 +192,10 @@ def train_model(config):
                 
                 avg_test_loss = np.mean(test_losses)
                 wandb.log({
-                    'epoch': epoch + 1,
-                    'batch': batch_count,
-                    'test_loss': avg_test_loss
-                })
+                    'test/loss': avg_test_loss,
+                    'test/batch': batch_count,
+                    'test/epoch': epoch + 1
+                }, step=batch_count + epoch * train_batches_per_epoch)
                 model.train()
         
         # Validation
@@ -251,8 +258,8 @@ def train_model(config):
         param_stats = {}
         for name, param in model.named_parameters():
             if param.requires_grad:
-                param_stats[f'param_mean_{name}'] = param.data.mean().item()
-                param_stats[f'param_std_{name}'] = param.data.std().item()
+                param_stats[f'params/{name}_mean'] = param.data.mean().item()
+                param_stats[f'params/{name}_std'] = param.data.std().item()
         
         # Get memory usage
         if torch.cuda.is_available():
@@ -262,27 +269,28 @@ def train_model(config):
             process = psutil.Process()
             memory_allocated = process.memory_info().rss / 1024**2  # MB
         
-        # Log metrics
+        # Log epoch metrics
         log_dict = {
-            'epoch': epoch + 1,
-            'train_loss': avg_train_loss,
-            'val_loss': avg_val_loss,
-            'val_accuracy': avg_val_accuracy,
-            'test_accuracy': avg_test_accuracy,
-            'learning_rate': optimizer.param_groups[0]['lr'],
-            'avg_grad_norm': avg_grad_norm,
-            'avg_batch_time': avg_batch_time,
-            'epoch_time': epoch_time,
-            'memory_allocated': memory_allocated,
+            'epoch/train_loss': avg_train_loss,
+            'epoch/val_loss': avg_val_loss,
+            'epoch/val_accuracy': avg_val_accuracy,
+            'epoch/test_accuracy': avg_test_accuracy,
+            'epoch/grad_norm': avg_grad_norm,
+            'epoch/batch_time': avg_batch_time,
+            'epoch/time': epoch_time,
+            'epoch/memory_allocated': memory_allocated,
+            'epoch/best_val_loss': best_val_loss,
+            'epoch/best_epoch': best_epoch,
         }
         
         if torch.cuda.is_available():
-            log_dict['memory_cached'] = memory_cached
+            log_dict['epoch/memory_cached'] = memory_cached
         
         # Add parameter statistics
         log_dict.update(param_stats)
         
-        wandb.log(log_dict)
+        # Log to wandb with explicit step
+        wandb.log(log_dict, step=(epoch + 1) * train_batches_per_epoch)
         
         print(f'Epoch {epoch+1}:')
         print(f'  Train Loss: {avg_train_loss:.4f}')

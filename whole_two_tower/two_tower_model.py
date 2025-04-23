@@ -21,7 +21,9 @@ class EmbeddingMapper(nn.Module):
         with torch.no_grad():
             for i in range(self.vocab_size):
                 word = self.gensim_model.wv.index_to_key[i]
-                self.embedding.weight[i] = torch.FloatTensor(self.gensim_model.wv[word])
+                # Make the array writable by creating a copy
+                embedding_array = np.copy(self.gensim_model.wv[word])
+                self.embedding.weight[i] = torch.FloatTensor(embedding_array)
     
     def forward(self, x):
         return self.embedding(x)
