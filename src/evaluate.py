@@ -44,7 +44,8 @@ def topk(model):
         'medicine',
         'university'
     ]
-    idx = vocab_to_int[words[random.randint(0, len(words) - 1)]]
+    word = words[random.randint(0, len(words) - 1)]
+    idx = vocab_to_int[word]
     vec = model.in_embed.weight[idx].detach()
     with torch.no_grad():
         vec = torch.nn.functional.normalize(vec.unsqueeze(0), p=2, dim=1)
@@ -54,7 +55,7 @@ def topk(model):
         )
         sim = torch.matmul(emb, vec.squeeze())
         top_val, top_idx = torch.topk(sim, 6)
-        print('\nTop 5 words similar to "computer":')
+        print(f'\nTop 5 words similar to {word}:')
         count = 0
         for i, idx in enumerate(top_idx):
             word = int_to_vocab[idx.item()]
