@@ -21,22 +21,52 @@ WINDOW = 8
 MIN_COUNT = 1  # Include all words
 WORKERS = 8
 EPOCHS = 5
-LEARNING_RATE = 0.0005
+INITIAL_LEARNING_RATE = 0.0005
+MIN_LEARNING_RATE = 0.00001
+LEARNING_RATE_DECAY = 0.95  # Decay factor for learning rate
+GRADIENT_CLIP = 1.0  # Clip gradients to prevent explosion
 BATCH_WORDS = 5000
 HS = 0
 NEGATIVE = 5
 SAMPLE = 0.001  # Downsample setting
 SG = 1  # Skip-gram model (1) or CBOW (0)
-TEST_SIZE = 0.1  # 10% of data for testing
+TRAIN_SIZE = 0.7  # 70% of data for training
+VAL_SIZE = 0.15   # 15% of data for validation
+TEST_SIZE = 0.15  # 15% of data for testing
 USE_WANDB = True  # Set to False to disable wandb
+EARLY_STOPPING_PATIENCE = 3  # Number of epochs to wait before early stopping
+MIN_IMPROVEMENT = 0.0001  # Minimum improvement required to consider it progress
+WARMUP_EPOCHS = 1  # Number of epochs to use initial learning rate before decay
 
 # Create output directory
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
+def split_train_val_test(sentences, train_size=TRAIN_SIZE, val_size=VAL_SIZE, test_size=TEST_SIZE):
+    """Split sentences into training, validation, and test sets."""
+    print(f"Splitting data into train ({train_size:.1%}), validation ({val_size:.1%}), and test ({test_size:.1%}) sets...")
+    
+    # Shuffle sentences
+    random.shuffle(sentences)
+    
+    # Calculate split indices
+    train_idx = int(len(sentences) * train_size)
+    val_idx = train_idx + int(len(sentences) * val_size)
+    
+    # Split into train, validation, and test
+    train_sentences = sentences[:train_idx]
+    val_sentences = sentences[train_idx:val_idx]
+    test_sentences = sentences[val_idx:]
+    
+    print(f"Train set: {len(train_sentences)} sentences")
+    print(f"Validation set: {len(val_sentences)} sentences")
+    print(f"Test set: {len(test_sentences)} sentences")
+    
+    return train_sentences, val_sentences, test_sentences
+
 class ProgressCallback(CallbackAny2Vec):
     """Callback to track training progress and loss."""
     
-    def __init__(self, log_interval=1000, window_size=100, test_sentences=None):
+    def __init__(self, log_interval=1000, window_size=100, val_sentences=None, test_sentences=None):
         self.pbar = None
         self.start_time = time.time()
         self.last_update = self.start_time
@@ -47,13 +77,23 @@ class ProgressCallback(CallbackAny2Vec):
         self.window_size = window_size
         self.loss_history = []
         self.epoch_losses = []
+        self.val_losses = []
         self.test_losses = []
         self.current_epoch_loss = 0
         self.current_epoch_words = 0
         self.recent_losses = deque(maxlen=window_size)
         self.epoch_start_time = None
+        self.val_sentences = val_sentences
         self.test_sentences = test_sentences
         self.run = None
+        self.best_val_loss = float('inf')
+        self.best_model = None
+        self.patience = EARLY_STOPPING_PATIENCE
+        self.epochs_without_improvement = 0
+        self.current_learning_rate = INITIAL_LEARNING_RATE
+        self.gradient_norms = []  # Track gradient norms
+        self.clipped_gradients = 0  # Count clipped gradients
+        self.last_loss = float('inf')  # Track last loss for improvement check
         
         # Initialize wandb if enabled
         if USE_WANDB:
@@ -66,7 +106,10 @@ class ProgressCallback(CallbackAny2Vec):
                         "min_count": MIN_COUNT,
                         "workers": WORKERS,
                         "epochs": EPOCHS,
-                        "learning_rate": LEARNING_RATE,
+                        "initial_learning_rate": INITIAL_LEARNING_RATE,
+                        "min_learning_rate": MIN_LEARNING_RATE,
+                        "learning_rate_decay": LEARNING_RATE_DECAY,
+                        "gradient_clip": GRADIENT_CLIP,
                         "batch_words": BATCH_WORDS,
                         "hs": HS,
                         "negative": NEGATIVE,
@@ -74,7 +117,13 @@ class ProgressCallback(CallbackAny2Vec):
                         "sg": SG,
                         "model_type": "Skip-gram" if SG == 1 else "CBOW",
                         "optimization": "Hierarchical Softmax" if HS == 1 else "Negative Sampling",
-                        "dataset": "text8 + MS MARCO"
+                        "dataset": "text8 + MS MARCO",
+                        "patience": self.patience,
+                        "min_improvement": MIN_IMPROVEMENT,
+                        "warmup_epochs": WARMUP_EPOCHS,
+                        "train_size": TRAIN_SIZE,
+                        "val_size": VAL_SIZE,
+                        "test_size": TEST_SIZE
                     }
                 )
                 print("Weights & Biases initialized successfully")
@@ -99,6 +148,7 @@ class ProgressCallback(CallbackAny2Vec):
         # Initialize loss tracking
         self.loss_history = []
         self.epoch_losses = []
+        self.val_losses = []
         self.test_losses = []
         self.current_epoch_loss = 0
         self.current_epoch_words = 0
@@ -118,11 +168,27 @@ class ProgressCallback(CallbackAny2Vec):
         self.epoch_start_time = time.time()
         self.current_epoch_loss = 0
         self.current_epoch_words = 0
+        self.gradient_norms = []  # Reset gradient tracking
+        self.clipped_gradients = 0
+        
+        # Update learning rate with warmup
+        if self.epoch > WARMUP_EPOCHS:  # Don't decay during warmup
+            self.current_learning_rate = max(
+                self.current_learning_rate * LEARNING_RATE_DECAY,
+                MIN_LEARNING_RATE
+            )
+            model.alpha = self.current_learning_rate
+            model.min_alpha = self.current_learning_rate
+        
         print(f"Starting epoch {self.epoch}/{model.epochs}")
+        print(f"Current learning rate: {self.current_learning_rate:.6f}")
         
         # Log to wandb
         if self.run is not None:
-            wandb.log({"epoch": self.epoch})
+            wandb.log({
+                "epoch": self.epoch,
+                "learning_rate": self.current_learning_rate
+            })
     
     def on_batch_end(self, model):
         """Called after each batch is processed."""
@@ -147,7 +213,7 @@ class ProgressCallback(CallbackAny2Vec):
                 self.pbar.set_postfix({
                     "vocab_size": len(model.wv) if hasattr(model, 'wv') else "building",
                     "epoch": self.epoch,
-                    "loss": f"{avg_loss:.4f}"
+                    "train_loss": f"{avg_loss:.4f}"  # Changed from "loss" to "train_loss" for clarity
                 })
             
             self.last_update = current_time
@@ -163,28 +229,57 @@ class ProgressCallback(CallbackAny2Vec):
                 # Log loss at intervals
                 if words_processed % self.log_interval < words_diff:
                     avg_loss = np.mean(list(self.recent_losses)) if self.recent_losses else 0
-                    print(f"Words: {words_processed}, Loss: {avg_loss:.4f}")
+                    print(f"Words: {words_processed}, Training Loss: {avg_loss:.4f}")  # Added "Training" for clarity
                     
                     # Log to wandb
                     if self.run is not None:
                         wandb.log({
-                            "batch_loss": avg_loss,
+                            "train_loss": avg_loss,  # Changed from "batch_loss" to "train_loss"
                             "words_processed": words_processed,
-                            "epoch": self.epoch
+                            "epoch": self.epoch,
+                            "learning_rate": self.current_learning_rate
                         })
             except:
                 pass
         
+        # Track gradient information
+        try:
+            # Get the latest gradient norm (if available)
+            if hasattr(model, 'get_latest_gradient_norm'):
+                grad_norm = model.get_latest_gradient_norm()
+                self.gradient_norms.append(grad_norm)
+                
+                # Check if gradient was clipped
+                if grad_norm > GRADIENT_CLIP:
+                    self.clipped_gradients += 1
+                    # Apply gradient clipping
+                    model.clip_gradients(GRADIENT_CLIP)
+                
+                # Log gradient information at intervals
+                if words_processed % self.log_interval < words_diff:
+                    avg_grad_norm = np.mean(self.gradient_norms[-100:]) if self.gradient_norms else 0
+                    clipped_ratio = self.clipped_gradients / len(self.gradient_norms) if self.gradient_norms else 0
+                    
+                    if self.run is not None:
+                        wandb.log({
+                            "gradient_norm": avg_grad_norm,
+                            "clipped_gradients_ratio": clipped_ratio,
+                            "words_processed": words_processed,
+                            "epoch": self.epoch
+                        })
+        except:
+            pass
+        
         self.last_words = words_processed
     
-    def calculate_test_loss(self, model):
+    def calculate_test_loss(self, model, sentences):
         """Calculate loss on test set."""
-        if not self.test_sentences or len(self.test_sentences) == 0:
+        if not sentences or len(sentences) == 0:
             return None
         
         try:
             # Use a subset of test sentences for efficiency
-            test_subset = random.sample(self.test_sentences, min(1000, len(self.test_sentences)))
+            test_subset = random.sample(sentences, min(1000, len(sentences)))
             
             # Calculate total loss on test set
             total_test_loss = 0
@@ -239,53 +334,108 @@ class ProgressCallback(CallbackAny2Vec):
         if self.current_epoch_words > 0:
             train_loss = self.current_epoch_loss / self.current_epoch_words
             self.epoch_losses.append(train_loss)
+            print(f"\nEpoch {self.epoch} Training Loss: {train_loss:.4f}")  # Added explicit training loss print
         
-        # Calculate test loss
-        test_loss = self.calculate_test_loss(model)
+        # Calculate validation loss
+        val_loss = self.calculate_test_loss(model, self.val_sentences)
+        if val_loss is not None:
+            self.val_losses.append(val_loss)
+            
+            # Check if this is the best model so far based on validation loss
+            # Only consider it an improvement if the loss decrease is significant
+            if val_loss < (self.best_val_loss - MIN_IMPROVEMENT):
+                self.best_val_loss = val_loss
+                self.best_model = model
+                self.epochs_without_improvement = 0
+                # Save the best model
+                model_path = os.path.join(OUTPUT_DIR, 'best_model')
+                model.save(model_path)
+                print(f"New best model saved with validation loss: {val_loss:.4f}")
+            else:
+                self.epochs_without_improvement += 1
+        
+        # Calculate test loss (only for monitoring, not for model selection)
+        test_loss = self.calculate_test_loss(model, self.test_sentences)
         if test_loss is not None:
             self.test_losses.append(test_loss)
+        
+        # Calculate gradient statistics for the epoch
+        avg_grad_norm = np.mean(self.gradient_norms) if self.gradient_norms else 0
+        max_grad_norm = np.max(self.gradient_norms) if self.gradient_norms else 0
+        clipped_ratio = self.clipped_gradients / len(self.gradient_norms) if self.gradient_norms else 0
         
         # Print epoch summary with clear formatting
         print("\n" + "="*50)
         print(f"EPOCH {self.epoch} SUMMARY")
         print("="*50)
         print(f"Time: {epoch_time:.2f} seconds")
+        print(f"Learning Rate: {self.current_learning_rate:.6f}")
         if train_loss is not None:
-            print(f"Training Loss: {train_loss:.4f}")
+            print(f"Training Loss: {train_loss:.4f}")  # Explicitly showing training loss
+        if val_loss is not None:
+            print(f"Validation Loss: {val_loss:.4f}")
+            print(f"Best Validation Loss: {self.best_val_loss:.4f}")
         if test_loss is not None:
             print(f"Test Loss: {test_loss:.4f}")
+        print(f"Average Gradient Norm: {avg_grad_norm:.4f}")
+        print(f"Max Gradient Norm: {max_grad_norm:.4f}")
+        print(f"Clipped Gradients Ratio: {clipped_ratio:.2%}")
         print("="*50 + "\n")
         
         # Log to wandb
         if self.run is not None:
-            # Define metrics to ensure proper step ordering
-            wandb.define_metric("epoch")
-            wandb.define_metric("train_loss", step_metric="epoch")
-            wandb.define_metric("test_loss", step_metric="epoch")
-            
             log_data = {
                 "epoch": self.epoch,
-                "epoch_time": epoch_time
+                "epoch_time": epoch_time,
+                "learning_rate": self.current_learning_rate,
+                "avg_gradient_norm": avg_grad_norm,
+                "max_gradient_norm": max_grad_norm,
+                "clipped_gradients_ratio": clipped_ratio
             }
             if train_loss is not None:
-                log_data["train_loss"] = train_loss
+                log_data["train_loss"] = train_loss  # Explicitly logging training loss
+            if val_loss is not None:
+                log_data["val_loss"] = val_loss
+                log_data["best_val_loss"] = self.best_val_loss
             if test_loss is not None:
                 log_data["test_loss"] = test_loss
             
-            # Log all metrics at once with the current epoch as the step
             wandb.log(log_data, step=self.epoch)
             
-            # Create a custom plot comparing train and test loss
-            if train_loss is not None and test_loss is not None:
+            # Create a custom plot comparing all losses
+            if train_loss is not None and val_loss is not None and test_loss is not None:
                 wandb.log({
                     "loss_comparison": wandb.plot.line_series(
-                        xs=[[self.epoch], [self.epoch]],
-                        ys=[[train_loss], [test_loss]],
-                        keys=["Train Loss", "Test Loss"],
-                        title="Training vs Test Loss",
+                        xs=[[self.epoch], [self.epoch], [self.epoch]],
+                        ys=[[train_loss], [val_loss], [test_loss]],
+                        keys=["Train Loss", "Validation Loss", "Test Loss"],
+                        title="Training vs Validation vs Test Loss",
                         xname="Epoch"
                     )
                 }, step=self.epoch)
+            
+            # Create a plot for gradient norms
+            if self.gradient_norms:
+                wandb.log({
+                    "gradient_norms": wandb.plot.line_series(
+                        xs=[list(range(len(self.gradient_norms)))],
+                        ys=[self.gradient_norms],
+                        keys=["Gradient Norm"],
+                        title="Gradient Norms Over Time",
+                        xname="Batch"
+                    )
+                }, step=self.epoch)
+        
+        # Check for early stopping based on validation loss
+        if self.epochs_without_improvement >= self.patience:
+            print(f"\nEarly stopping triggered after {self.patience} epochs without improvement in validation loss")
+            print(f"Best validation loss achieved: {self.best_val_loss:.4f}")
+            if self.best_model is not None:
+                print("Restoring best model...")
+                model = self.best_model
+            return True  # Signal to stop training
+        
+        return False  # Continue training
     
     def on_train_end(self, model):
         """Called when training ends."""
@@ -299,18 +449,28 @@ class ProgressCallback(CallbackAny2Vec):
         # Print loss history if available
         if self.epoch_losses:
             print("\nLoss history by epoch:")
-            print("Epoch\tTrain Loss\tTest Loss")
-            for epoch, (train_loss, test_loss) in enumerate(zip(self.epoch_losses, self.test_losses + [None] * (len(self.epoch_losses) - len(self.test_losses))), 1):
+            print("Epoch\tTrain Loss\tValidation Loss\tTest Loss")
+            for epoch, (train_loss, val_loss, test_loss) in enumerate(zip(
+                self.epoch_losses,
+                self.val_losses + [None] * (len(self.epoch_losses) - len(self.val_losses)),
+                self.test_losses + [None] * (len(self.epoch_losses) - len(self.test_losses))
+            ), 1):
+                val_str = f"{val_loss:.4f}" if val_loss is not None else "N/A"
                 test_str = f"{test_loss:.4f}" if test_loss is not None else "N/A"
-                print(f"{epoch}\t{train_loss:.4f}\t{test_str}")
+                print(f"{epoch}\t{train_loss:.4f}\t{val_str}\t{test_str}")
             
             # Save loss history to file
             loss_file = os.path.join(OUTPUT_DIR, 'loss_history.txt')
             with open(loss_file, 'w') as f:
-                f.write("Epoch,Train Loss,Test Loss\n")
-                for epoch, (train_loss, test_loss) in enumerate(zip(self.epoch_losses, self.test_losses + [None] * (len(self.epoch_losses) - len(self.test_losses))), 1):
+                f.write("Epoch,Train Loss,Validation Loss,Test Loss\n")
+                for epoch, (train_loss, val_loss, test_loss) in enumerate(zip(
+                    self.epoch_losses,
+                    self.val_losses + [None] * (len(self.epoch_losses) - len(self.val_losses)),
+                    self.test_losses + [None] * (len(self.epoch_losses) - len(self.test_losses))
+                ), 1):
+                    val_str = f"{val_loss:.6f}" if val_loss is not None else "N/A"
                     test_str = f"{test_loss:.6f}" if test_loss is not None else "N/A"
-                    f.write(f"{epoch},{train_loss:.6f},{test_str}\n")
+                    f.write(f"{epoch},{train_loss:.6f},{val_str},{test_str}\n")
             print(f"Loss history saved to {loss_file}")
         
         # Log final metrics to wandb
@@ -324,6 +484,9 @@ class ProgressCallback(CallbackAny2Vec):
             # Add final loss values if available
             if self.epoch_losses:
                 final_metrics["final_train_loss"] = self.epoch_losses[-1]
+            if self.val_losses:
+                final_metrics["final_val_loss"] = self.val_losses[-1]
+                final_metrics["best_val_loss"] = self.best_val_loss
             if self.test_losses:
                 final_metrics["final_test_loss"] = self.test_losses[-1]
             
@@ -332,31 +495,43 @@ class ProgressCallback(CallbackAny2Vec):
             # Create a table with loss history
             if self.epoch_losses:
                 data = []
-                for epoch, (train_loss, test_loss) in enumerate(zip(self.epoch_losses, self.test_losses + [None] * (len(self.epoch_losses) - len(self.test_losses))), 1):
-                    data.append([epoch, train_loss, test_loss if test_loss is not None else "N/A"])
+                for epoch, (train_loss, val_loss, test_loss) in enumerate(zip(
+                    self.epoch_losses,
+                    self.val_losses + [None] * (len(self.epoch_losses) - len(self.val_losses)),
+                    self.test_losses + [None] * (len(self.epoch_losses) - len(self.test_losses))
+                ), 1):
+                    data.append([
+                        epoch,
+                        train_loss,
+                        val_loss if val_loss is not None else "N/A",
+                        test_loss if test_loss is not None else "N/A"
+                    ])
                 
                 wandb.log({
                     "loss_history": wandb.Table(
                         data=data,
-                        columns=["Epoch", "Train Loss", "Test Loss"]
+                        columns=["Epoch", "Train Loss", "Validation Loss", "Test Loss"]
                     )
                 })
                 
                 # Create a line plot of the loss history
                 epochs = list(range(1, len(self.epoch_losses) + 1))
                 train_losses = self.epoch_losses
+                val_losses = self.val_losses + [None] * (len(self.epoch_losses) - len(self.val_losses))
                 test_losses = self.test_losses + [None] * (len(self.epoch_losses) - len(self.test_losses))
                 
                 # Filter out None values for plotting
+                valid_val_epochs = [e for e, t in zip(epochs, val_losses) if t is not None]
+                valid_val_losses = [t for t in val_losses if t is not None]
                 valid_test_epochs = [e for e, t in zip(epochs, test_losses) if t is not None]
                 valid_test_losses = [t for t in test_losses if t is not None]
                 
                 wandb.log({
                     "loss_plot": wandb.plot.line_series(
-                        xs=[epochs, valid_test_epochs],
-                        ys=[train_losses, valid_test_losses],
-                        keys=["Train Loss", "Test Loss"],
-                        title="Training and Test Loss Over Time",
+                        xs=[epochs, valid_val_epochs, valid_test_epochs],
+                        ys=[train_losses, valid_val_losses, valid_test_losses],
+                        keys=["Train Loss", "Validation Loss", "Test Loss"],
+                        title="Training, Validation, and Test Loss Over Time",
                         xname="Epoch"
                     )
                 })
@@ -474,34 +649,15 @@ def prepare_passage_sentences(passages, window_size=5):
     print(f"Created {len(sentences)} sentences from passages")
     return sentences
 
-def split_train_test(sentences, test_size=TEST_SIZE):
-    """Split sentences into training and test sets."""
-    print(f"Splitting data into train ({1-test_size:.1%}) and test ({test_size:.1%}) sets...")
-    
-    # Shuffle sentences
-    random.shuffle(sentences)
-    
-    # Calculate split index
-    split_idx = int(len(sentences) * (1 - test_size))
-    
-    # Split into train and test
-    train_sentences = sentences[:split_idx]
-    test_sentences = sentences[split_idx:]
-    
-    print(f"Train set: {len(train_sentences)} sentences")
-    print(f"Test set: {len(test_sentences)} sentences")
-    
-    return train_sentences, test_sentences
-
-def train_word2vec_model(sentences, test_sentences=None, embedding_dim=EMBEDDING_DIM, window=WINDOW, 
+def train_word2vec_model(sentences, val_sentences, test_sentences, embedding_dim=EMBEDDING_DIM, window=WINDOW, 
                          min_count=MIN_COUNT, workers=WORKERS, epochs=EPOCHS,
-                         learning_rate=LEARNING_RATE, batch_words=BATCH_WORDS,
+                         learning_rate=INITIAL_LEARNING_RATE, batch_words=BATCH_WORDS,
                          hs=HS, negative=NEGATIVE, sample=SAMPLE, sg=SG):
     """Train a Word2Vec model on the sentences."""
     print(f"Training Word2Vec model with embedding_dim={embedding_dim}, window={window}...")
     
     # Create progress callback with loss tracking
-    progress_callback = ProgressCallback(log_interval=10000, window_size=100, test_sentences=test_sentences)
+    progress_callback = ProgressCallback(log_interval=10000, window_size=100, val_sentences=val_sentences, test_sentences=test_sentences)
     
     # Initialize and train the model
     print("Initializing Word2Vec model...")
@@ -589,8 +745,8 @@ def main():
         all_sentences = text8_sentences + ms_marco_sentences
         print(f"Total sentences: {len(all_sentences)}")
         
-        # Split into train and test sets
-        train_sentences, test_sentences = split_train_test(all_sentences)
+        # Split into train, validation, and test sets
+        train_sentences, val_sentences, test_sentences = split_train_val_test(all_sentences)
         
         # Print hyperparameters
         print("\nWord2Vec Training Parameters:")
@@ -599,7 +755,10 @@ def main():
         print(f"Minimum word count: {MIN_COUNT}")
         print(f"Number of workers: {WORKERS}")
         print(f"Number of epochs: {EPOCHS}")
-        print(f"Learning rate: {LEARNING_RATE}")
+        print(f"Initial learning rate: {INITIAL_LEARNING_RATE}")
+        print(f"Minimum learning rate: {MIN_LEARNING_RATE}")
+        print(f"Learning rate decay: {LEARNING_RATE_DECAY}")
+        print(f"Gradient clip: {GRADIENT_CLIP}")
         print(f"Batch size: {BATCH_WORDS} words")
         print(f"Model type: {'Skip-gram' if SG == 1 else 'CBOW'}")
         print(f"Hierarchical softmax: {'Enabled' if HS == 1 else 'Disabled'}")
@@ -607,9 +766,10 @@ def main():
         if NEGATIVE > 0:
             print(f"Negative samples: {NEGATIVE}")
         print(f"Downsample setting: {SAMPLE}")
+        print(f"Train/Val/Test split: {TRAIN_SIZE:.1%}/{VAL_SIZE:.1%}/{TEST_SIZE:.1%}")
         
         # Train Word2Vec model
-        model = train_word2vec_model(train_sentences, test_sentences)
+        model = train_word2vec_model(train_sentences, val_sentences, test_sentences)
         
         # Save the model
         model_path = os.path.join(OUTPUT_DIR, 'word2vec_model')

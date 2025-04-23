@@ -70,8 +70,7 @@ data/
 !data/.gitkeep
 !models/.gitkeep
 saved_models/
-models/text8_embeddings/text8
-models/text8_embeddings/ms_marco_train.parquet
+models/text8_embeddings/
 
 
 # Streamlit
