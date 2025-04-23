@@ -3,7 +3,7 @@ from engine.text import setup_language_models, MeanPooledWordEmbedder
 from engine.model import Encoder
 import torch
 from engine.utils import get_wandb_checkpoint_path, get_device
-
+from engine.text.gensim_w2v import GensimWord2Vec
 
 def setup_semantics_embedder():
     # Pull model from wandb
@@ -42,18 +42,27 @@ def setup_semantics_embedder():
 
 class SemanticsEmbedder:
     def __init__(
-        self, query_encoder: Encoder,
+        self, 
+        query_encoder: Encoder,
         doc_encoder: Encoder,
+        embeddings: str,
         device: torch.device,
     ):
-        self.tokeniser, self.w2v_model = setup_language_models()
+        if embeddings not in ['self-trained', 'word2vec-google-news-300']:
+            raise ValueError(f'Invalid embeddings: {embeddings}')
+        if embeddings == 'self-trained':
+            self.tokeniser, self.w2v_model = setup_language_models()
 
-        self.sentence_embedder = MeanPooledWordEmbedder(
-            self.tokeniser,
-            self.w2v_model,
-            device,
-        )
-        self.embed_fn = self.sentence_embedder.embed_string
+            self.sentence_embedder = MeanPooledWordEmbedder(
+                self.tokeniser,
+                self.w2v_model,
+                device,
+            )
+            self.embed_fn = self.sentence_embedder.embed_string
+        elif embeddings == 'word2vec-google-news-300':
+            self.gensim_w2v = GensimWord2Vec()
+            self.embed_fn = self.gensim_w2v.get_mean_embedding
+
         self.query_encoder = query_encoder.to(device)
         self.doc_encoder = doc_encoder.to(device)
         self.device = device

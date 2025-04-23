@@ -27,3 +27,20 @@ class Encoder(torch.nn.Module):
         x = self.fc2(x)
         output_embedding = x
         return output_embedding
+
+class RNNEncoder(torch.nn.Module):
+    def __init__(self, input_dim: int, hidden_dim: int, output_dim: int):
+        super().__init__()
+
+        self.input_dim = input_dim
+        self.hidden_dim = hidden_dim
+        self.output_dim = output_dim  
+    
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            input_word_embeddings: [B, D_in]
+        Returns:
+            output_embedding[B, D_out]
+        """ 
+        pass
