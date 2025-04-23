@@ -60,7 +60,7 @@ def create_db_my_embeddings():
 
     train_ds = load_ms_marco()['train']
 
-    for i in tqdm(range(1000)):
+    for i in tqdm(range(2000)):
         docs_row = train_ds[i]['passages']['passage_text']
         embeddings = [
             semantics_embedder.embed_doc(

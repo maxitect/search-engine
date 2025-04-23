@@ -13,7 +13,7 @@ def setup_semantics_embedder():
     D_out = 100
 
     checkpoint_path = get_wandb_checkpoint_path(
-        'kwokkenton-individual/mlx-week2-search-engine/towers_mlp:v19',
+        'kwokkenton-individual/mlx-week2-search-engine/towers_mlp:v38',
     )
     query_encoder = Encoder(
         input_dim=D_in,

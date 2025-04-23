@@ -2,6 +2,7 @@ import gensim.downloader as api
 import re
 import numpy as np
 from typing import List, Optional
+import torch
 
 class GensimWord2Vec:
     def __init__(self, model_name: str = 'word2vec-google-news-300'):
@@ -14,7 +15,7 @@ class GensimWord2Vec:
         self.model = api.load(model_name)
         self.embedding_dim = self.model.vector_size
         # Create a zero vector for unknown words
-        self.unknown_vector = np.zeros(self.embedding_dim)
+        self.unknown_vector = torch.zeros(self.embedding_dim)
         
     def preprocess_text(self, text: str) -> List[str]:
         """
@@ -37,7 +38,7 @@ class GensimWord2Vec:
         words = [word for word in text.split() if word]
         return words
     
-    def get_word_embedding(self, word: str) -> np.ndarray:
+    def get_word_embedding(self, word: str) -> torch.Tensor:
         """
         Get the embedding for a single word.
         Returns zero vector for unknown words.
@@ -49,11 +50,11 @@ class GensimWord2Vec:
             Word embedding as numpy array
         """
         try:
-            return self.model[word]
+            return torch.tensor(self.model[word])
         except KeyError:
             return self.unknown_vector
     
-    def get_sentence_embeddings(self, text: str) -> List[np.ndarray]:
+    def get_sentence_embeddings(self, text: str) -> torch.Tensor:
         """
         Get embeddings for each word in the input text.
         Handles unknown words by returning zero vectors.
@@ -65,10 +66,10 @@ class GensimWord2Vec:
             List of word embeddings as numpy arrays
         """
         words = self.preprocess_text(text)
-        embeddings = [self.get_word_embedding(word) for word in words]
-        return np.array(embeddings)
+        embeddings = torch.stack([self.get_word_embedding(word) for word in words])
+        return embeddings
     
-    def get_mean_embedding(self, text: str) -> np.ndarray:
+    def get_mean_embedding(self, text: str) -> torch.Tensor:
         """
         Get the mean embedding of all words in the text.
         Returns zero vector if no valid words are found.
@@ -77,9 +78,10 @@ class GensimWord2Vec:
             text: Input text string
             
         Returns:
-            Mean embedding as numpy array
+            Mean embedding as torch.Tensor
         """
         embeddings = self.get_sentence_embeddings(text)
-        if not embeddings:
+        if len(embeddings) == 0:
             return self.unknown_vector
-        return np.mean(embeddings, axis=0)
+        return torch.mean(embeddings, dim=0)
+

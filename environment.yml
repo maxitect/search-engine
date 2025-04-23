@@ -6,7 +6,7 @@ channels:
 dependencies:
   - python=3.10
   - pip
-  - numpy=2.2.4
+  - numpy
   - pandas
   - matplotlib
   - scipy
@@ -16,10 +16,10 @@ dependencies:
   - tqdm
   - pre-commit
   - streamlit
-  - gensim
   - pip:
     - wandb
     - fastparquet
     - chromadb
     - sentence-transformers
     - onnxruntime-gpu
+    - gensim

@@ -10,13 +10,11 @@ from tqdm import tqdm
 import wandb
 from engine.data import MSMarcoDataset
 from engine.model import Encoder, TripletLoss
-from engine.text import setup_language_models, MeanPooledWordEmbedder
+from engine.text import setup_language_models, MeanPooledWordEmbedder, GensimWord2Vec
 from engine.utils import get_device, get_wandb_checkpoint_path
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
-
-def get_gensim()
 
 def run_sanity_check(
     q_vectors, pos_vectors, neg_vectors,
@@ -87,7 +85,8 @@ class Trainer:
             )
             self.embed_fn = self.sentence_embedder.embed_string
         elif embeddings == 'word2vec-google-news-300':
-            self.embed_fn = self.sentence_embedder.embed_string
+            self.gensim_w2v = GensimWord2Vec()
+            self.embed_fn = self.gensim_w2v.get_mean_embedding
 
         self.collate_fn = partial(
             self.collate_fn_marco,
@@ -329,11 +328,12 @@ class Trainer:
 
 if __name__ == '__main__':
     # Training configs
-    batch_size = 32
-    K = 20
-    lr = 5e-4
+    batch_size = 4
+    K = 5
+    lr = 1e-3
     mode = 'random'
-    embeddings = 'self-trained'
+    # embeddings = 'self-trained'
+    embeddings = 'word2vec-google-news-300'
     num_epochs = 5
     # Model configs
     D_hidden = 100
@@ -350,7 +350,7 @@ if __name__ == '__main__':
         device=device,
     )
 
-    D_in = trainer.w2v_model.embedding_dim
+    D_in = 300
 
     query_encoder = Encoder(
         input_dim=D_in, hidden_dim=D_hidden, output_dim=D_out,
@@ -364,16 +364,16 @@ if __name__ == '__main__':
     )
 
     # Load previously trained model
-    checkpoint_path = get_wandb_checkpoint_path(
-        'kwokkenton-individual/mlx-week2-search-engine/towers_mlp:v19',
-    )
+    # checkpoint_path = get_wandb_checkpoint_path(
+    #     'kwokkenton-individual/mlx-week2-search-engine/towers_mlp:v19',
+    # )
 
-    # Load the model
-    checkpoint = torch.load(
-        checkpoint_path, map_location=device, weights_only=True,
-    )
-    query_encoder.load_state_dict(checkpoint['query_encoder_state_dict'])
-    doc_encoder.load_state_dict(checkpoint['doc_encoder_state_dict'])
+    # # Load the model
+    # checkpoint = torch.load(
+    #     checkpoint_path, map_location=device, weights_only=True,
+    # )
+    # query_encoder.load_state_dict(checkpoint['query_encoder_state_dict'])
+    # doc_encoder.load_state_dict(checkpoint['doc_encoder_state_dict'])
 
     triplet_loss = TripletLoss()
     trainer.train(
@@ -382,5 +382,5 @@ if __name__ == '__main__':
         doc_encoder=doc_encoder,
         triplet_loss=triplet_loss,
         optimiser=optimiser,
-        batches_print_frequency=200,
+        batches_print_frequency=100,
     )

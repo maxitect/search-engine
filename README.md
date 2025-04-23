@@ -130,9 +130,10 @@ git config --global user.email ""
 
 Precompute all word vectors using the skipgram model and save as a dictionary
 
-
-
 Setup your HF tokens
+
+Learnings: preprocess data well first
+
 
 ## References
 
