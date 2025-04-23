@@ -7,12 +7,24 @@ import numpy as np
 from tqdm import tqdm
 import wandb
 import os
+import re
+
+def clean_word(word):
+    """Clean a word by removing punctuation and converting to lowercase"""
+    # Remove punctuation and special characters
+    word = re.sub(r'[^\w\s]', '', word)
+    # Convert to lowercase
+    word = word.lower()
+    # Remove any remaining whitespace
+    word = word.strip()
+    return word
 
 def get_combined_words():
     """Loads text8 + MS-MARCO passages into a single word list"""
     # 1. Load text8
     with open("data/text8", "r") as f:
-        text8_words = f.read().split()
+        text8_words = [clean_word(word) for word in f.read().split()]
+        text8_words = [word for word in text8_words if word]  # Remove empty strings
     
     # 2. Load MS-MARCO passages
     print("Loading MS-MARCO passages...")
@@ -21,7 +33,10 @@ def get_combined_words():
     for example in tqdm(dataset, desc="Processing MS-MARCO"):
         passages = example['passages']['passage_text']
         for passage in passages:
-            msmarco_words.extend(passage.lower().split())
+            # Clean and filter words
+            words = [clean_word(word) for word in passage.split()]
+            words = [word for word in words if word]  # Remove empty strings
+            msmarco_words.extend(words)
     
     return text8_words + msmarco_words
 
