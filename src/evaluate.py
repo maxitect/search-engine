@@ -1,7 +1,8 @@
 import random
 import pandas as pd
 from src.dataset import MSMARCOTripletDataset
-from src.models.skipgram import negative_sampling_loss, triplet_loss_function
+from src.models.skipgram import negative_sampling_loss
+from src.models.twotowers import triplet_loss_function
 import src.config as config
 import torch
 import pickle
