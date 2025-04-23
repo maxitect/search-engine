@@ -155,7 +155,7 @@ def cosine_similarity(query, document):
     return torch.sum(
         query * document,
         dim=1
-    ) / (query_norm * doc_norm).squeeze()
+    ) / (query_norm * doc_norm + 1e-8).squeeze()
 
 
 def triplet_loss_function(
