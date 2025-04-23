@@ -37,32 +37,40 @@ def prepare_dataset():
     # Load MS MARCO data
     print("Loading MS MARCO data...")
     with open('/root/search-engine/models/text8_embeddings/ms_marco_train.json', 'r') as f:
-        data = json.load(f)
+        passages = json.load(f)
     
     # Process data
     print("Processing data...")
     processed_data = []
-    for item in tqdm(data):
+    error_count = 0
+    
+    # Process each passage
+    for passage in tqdm(passages, desc="Processing passages"):
         try:
-            # Process query
-            query_indices = process_text(item['query'], vocab, max_length=32)
+            # Process the passage text
+            passage_indices = process_text(passage, vocab, max_length=256)
             
-            # Process passages
-            passages = []
-            for passage in item['passages']:
-                passage_indices = process_text(passage['passage_text'], vocab, max_length=256)
-                passages.append({
-                    'passage_text': passage_indices,
-                    'is_selected': passage['is_selected']
-                })
+            # Create a dummy query (you'll need to replace this with actual queries)
+            dummy_query = "What is this passage about?"
+            query_indices = process_text(dummy_query, vocab, max_length=32)
             
+            # Create a processed item
             processed_data.append({
                 'query': query_indices,
-                'passages': passages
+                'passages': [{
+                    'passage_text': passage_indices,
+                    'is_selected': 1  # Mark as selected since we're using single passages
+                }]
             })
         except Exception as e:
-            print(f"Error processing item: {e}")
+            error_count += 1
+            if error_count <= 3:  # Only show first 3 errors
+                print(f"\nError processing passage: {e}")
+                print(f"Problematic passage: {passage[:200]}...")
             continue
+    
+    if error_count > 0:
+        print(f"\nSkipped {error_count} passages due to processing errors")
     
     # Split into train and validation
     train_size = int(len(processed_data) * 0.9)

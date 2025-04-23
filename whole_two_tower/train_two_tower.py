@@ -139,13 +139,28 @@ def train_model(config):
 
 if __name__ == '__main__':
     config = {
-        'train_path': '../data/msmarco/train.json',
-        'val_path': '../data/msmarco/val.json',
-        'gensim_model_path': '../models/text8_embeddings/word2vec_model',
+        'train_path': '/root/search-engine/data/msmarco/train.json',
+        'val_path': '/root/search-engine/data/msmarco/val.json',
+        'gensim_model_path': '/root/search-engine/models/text8_embeddings/word2vec_model',
         'hidden_dim': 256,
         'batch_size': 32,
         'learning_rate': 0.001,
         'epochs': 10
     }
+    
+    # Add debug logging
+    print("Checking data files...")
+    print(f"Train path exists: {os.path.exists(config['train_path'])}")
+    print(f"Val path exists: {os.path.exists(config['val_path'])}")
+    
+    if os.path.exists(config['train_path']):
+        with open(config['train_path'], 'r') as f:
+            lines = list(f)
+            print(f"Train file has {len(lines)} lines")
+    
+    if os.path.exists(config['val_path']):
+        with open(config['val_path'], 'r') as f:
+            lines = list(f)
+            print(f"Val file has {len(lines)} lines")
     
     train_model(config) 
