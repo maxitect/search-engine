@@ -143,15 +143,20 @@ def main():
         f'{sum(p.numel() for p in two_towers.parameters())}'
     )
 
-    # Define optimizer
+    # Define optimizer with no duplicates
+    all_params = set()
+    for param in list(qry_tower.parameters()) + list(doc_tower.parameters()):
+        all_params.add(param)
+
     optimiser = torch.optim.Adam(
-        list(qry_tower.parameters()) + list(doc_tower.parameters()),
-        lr=config.TWOTOWERS_LR
+        all_params,
+        lr=config.TWOTOWERS_LR,
+        weight_decay=config.WEIGHT_DECAY
     )
 
-    # Learning rate scheduler
+    # Learning rate scheduler - remove verbose flag
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimiser, mode='min', factor=0.5, patience=3, verbose=True
+        optimiser, mode='min', factor=0.5, patience=3
     )
 
     # Initialize wandb
@@ -186,9 +191,6 @@ def main():
 
             # Backward pass and optimize
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(
-                two_towers.parameters(), max_norm=1.0
-            )
             optimiser.step()
 
             train_loss += loss.item()
