@@ -46,7 +46,7 @@ def main():
         api = wandb.Api()
         artifact = api.artifact(
             'maxime-downe-founders-and-coders/search-engine/'
-            f'{"model-weights" if args.artifact_version else "skipgram-best"}:'
+            f'skipgram{"-best" if args.best_version else ""}:'
             f'{args.artifact_version}')
         artifact.download(root=config.SKIPGRAM_BEST_MODEL_PATH)
 
