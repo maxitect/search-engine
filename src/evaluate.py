@@ -1,7 +1,7 @@
 import random
 import pandas as pd
 from src.dataset import MSMARCOTripletDataset
-from src.model import triplet_loss_function
+from src.models.skipgram import negative_sampling_loss, triplet_loss_function
 import src.config as config
 import torch
 import pickle
@@ -21,7 +21,29 @@ test_df = pd.read_parquet('ms_marco_test.parquet')
 
 # Evaluate word similarity for skipgram training
 def topk(mFoo):
-    idx = vocab_to_int['computer']
+    words = [
+        'anarchism',
+        'monarchy',
+        'democracy',
+        'computer',
+        'laptop',
+        'beach',
+        'mountain',
+        'river',
+        'ocean',
+        'algorithm',
+        'mathematics',
+        'physics',
+        'chemistry',
+        'football',
+        'rugby',
+        'violin',
+        'guitar',
+        'hospital',
+        'medicine',
+        'university'
+    ]
+    idx = vocab_to_int[words[random.randint(0, len(words) - 1)]]
     vec = mFoo.emb.weight[idx].detach()
     with torch.no_grad():
         vec = torch.nn.functional.normalize(vec.unsqueeze(0), p=2, dim=1)
@@ -38,6 +60,39 @@ def topk(mFoo):
             count += 1
             if count == 5:
                 break
+
+
+def evaluate_model(model, word_freq, data_loader, name="val"):
+    """Evaluate model on the given data loader"""
+    model.eval()
+    total_loss = 0
+    batch_count = 0
+    num_neg_samples = config.NEGATIVE_SAMPLES
+
+    with torch.no_grad():
+        for ipt, trg in data_loader:
+            ipt, trg = ipt.to(dev), trg.to(dev)
+            batch_size = ipt.size(0)
+
+            # Sample negative words
+            neg_samples = torch.multinomial(
+                torch.tensor(word_freq, device=dev),
+                batch_size * config.NEGATIVE_SAMPLES,
+                replacement=True
+            ).view(batch_size, num_neg_samples)
+
+            # Get embeddings and calculate loss
+            input_embeds, pos_embeds, neg_embeds = model(
+                ipt, trg, neg_samples)
+            loss = negative_sampling_loss(
+                input_embeds, pos_embeds, neg_embeds)
+
+            total_loss += loss.item()
+            batch_count += 1
+
+    avg_loss = total_loss / batch_count
+    print(f"{name.capitalize()} Loss: {avg_loss:.4f}")
+    return avg_loss
 
 
 # Evaluate two tower model with test queries
