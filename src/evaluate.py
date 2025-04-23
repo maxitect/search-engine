@@ -67,7 +67,6 @@ def topk(model):
 
 
 def evaluate_model(model, word_freq, data_loader, name="val"):
-    """Evaluate model on the given data loader"""
     model.eval()
     total_loss = 0
     batch_count = 0
@@ -81,7 +80,7 @@ def evaluate_model(model, word_freq, data_loader, name="val"):
             # Sample negative words
             neg_samples = torch.multinomial(
                 torch.tensor(word_freq, device=dev),
-                batch_size * config.NEGATIVE_SAMPLES,
+                batch_size * num_neg_samples,
                 replacement=True
             ).view(batch_size, num_neg_samples)
 
