@@ -15,7 +15,7 @@ def get_combined_words():
     
     # 2. Load MS-MARCO passages
     print("Loading MS-MARCO passages...")
-    dataset = load_dataset("ms_marco", "v1.1", split="train[:50000]")
+    dataset = load_dataset("ms_marco", "v1.1", split="train[:100%]")
     msmarco_words = []
     for example in tqdm(dataset, desc="Processing MS-MARCO"):
         # Take first 2 passages from each example
@@ -132,6 +132,13 @@ def train():
             'optimizer_state_dict': optimizer.state_dict(),
             'loss': total_loss/len(train_data),
         }, f"checkpoint_epoch_{epoch}.pt")
+        
+        # Log epoch loss to wandb
+        wandb.log({
+            "epoch_loss": total_loss/len(train_data),
+            "epoch_accuracy": 100*correct/total,
+            "epoch": epoch
+        })
     
     # 6. Save final embeddings
     torch.save({
