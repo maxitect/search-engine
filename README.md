@@ -4,7 +4,9 @@ A neural search engine implementing a two-tower architecture trained on the MS M
 
 ## Setup
 
-1. Clone the repo
+### Clone
+
+1. Clone the repo:
 
    - **with https:**
 
@@ -18,19 +20,35 @@ A neural search engine implementing a two-tower architecture trained on the MS M
    git clone git@github.com:maxitect/search-engine.git
    ```
 
-1. Create environment from root:
+### For development
+
+2. Create environment from root:
 
    ```bash
    conda env create -f environment.yml
    ```
 
-1. Activate environment:
+3. Activate environment:
 
    ```bash
    conda activate search-engine
    ```
 
-1. Make sure you have access to the data repo at:
+### For training in container
+
+2. Download requirements:
+
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+3. Login to Weights and Biases:
+
+   ```
+   wandb login
+   ```
+
+4. Make sure you have access to the data repo at:
    ```
    https://huggingface.co/datasets/microsoft/ms_marco
    ```
