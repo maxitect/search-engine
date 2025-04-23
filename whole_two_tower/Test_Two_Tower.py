@@ -3,7 +3,7 @@ import torch.nn as nn
 from torch.utils.data import DataLoader
 import numpy as np
 from two_tower_model import TwoTowerModel
-from train_two_tower import MSMARCODataset
+from customised_train_tower import CustomTwoTowerModel, CustomMSMARCODataset
 import json
 from tqdm import tqdm
 from torch.serialization import add_safe_globals
@@ -14,9 +14,17 @@ from numpy.dtypes import Float64DType
 # Add numpy types to safe globals
 add_safe_globals([numpy.core.multiarray.scalar, dtype, Float64DType])
 
-def load_model(model_path, gensim_model_path, hidden_dim):
-    """Load the trained model."""
+def load_gensim_model(model_path, gensim_model_path, hidden_dim):
+    """Load the trained model with Gensim embeddings."""
     model = TwoTowerModel(gensim_model_path=gensim_model_path, hidden_dim=hidden_dim)
+    checkpoint = torch.load(model_path, weights_only=True)
+    model.load_state_dict(checkpoint['model_state_dict'])
+    model.eval()
+    return model
+
+def load_custom_model(model_path, vocab_size, embedding_dim, hidden_dim):
+    """Load the trained model with custom embeddings."""
+    model = CustomTwoTowerModel(vocab_size=vocab_size, embedding_dim=embedding_dim, hidden_dim=hidden_dim)
     checkpoint = torch.load(model_path, weights_only=True)
     model.load_state_dict(checkpoint['model_state_dict'])
     model.eval()
@@ -66,27 +74,64 @@ def print_examples(model, dataset, device, num_examples=10):
         print("-" * 100)
 
 def main():
-    # Configuration
-    config = {
-        'model_path': '/root/search-engine/models/Top_Tower_Epoch.pth',
-        'gensim_model_path': '/root/search-engine/models/text8_embeddings/word2vec_model',
-        'val_path': '/root/search-engine/data/msmarco/val.json',
-        'hidden_dim': 256,
-        'batch_size': 32
-    }
+    # Ask user which model to test
+    print("Which model would you like to test?")
+    print("1. Top_Tower_Epoch.pth (Gensim embeddings)")
+    print("2. Custom_Top_Tower_Epoch.pth (Custom embeddings)")
+    choice = input("Enter your choice (1 or 2): ").strip()
     
     # Set device
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Using device: {device}")
     
-    # Load model
-    print("Loading model...")
-    model = load_model(config['model_path'], config['gensim_model_path'], config['hidden_dim'])
-    model = model.to(device)
+    if choice == "1":
+        # Configuration for Gensim model
+        config = {
+            'model_path': '/root/search-engine/models/Top_Tower_Epoch.pth',
+            'gensim_model_path': '/root/search-engine/models/text8_embeddings/word2vec_model',
+            'val_path': '/root/search-engine/data/msmarco/val.json',
+            'hidden_dim': 256,
+            'batch_size': 32
+        }
+        
+        # Load model
+        print("Loading Gensim-based model...")
+        model = load_gensim_model(config['model_path'], config['gensim_model_path'], config['hidden_dim'])
+        model = model.to(device)
+        
+        # Load validation dataset
+        print("Loading validation dataset...")
+        val_dataset = MSMARCODataset(config['val_path'])
+        
+    elif choice == "2":
+        # Configuration for custom model
+        config = {
+            'model_path': '/root/search-engine/models/Custom_Top_Tower_Epoch.pth',
+            'val_path': '/root/search-engine/data/msmarco/val.json',
+            'vocab_size': 100000,
+            'embedding_dim': 300,
+            'hidden_dim': 256,
+            'batch_size': 32
+        }
+        
+        # Load model
+        print("Loading custom embeddings model...")
+        model = load_custom_model(
+            config['model_path'],
+            config['vocab_size'],
+            config['embedding_dim'],
+            config['hidden_dim']
+        )
+        model = model.to(device)
+        
+        # Load validation dataset
+        print("Loading validation dataset...")
+        val_dataset = CustomMSMARCODataset(config['val_path'])
+        
+    else:
+        print("Invalid choice. Please enter 1 or 2.")
+        return
     
-    # Load validation dataset
-    print("Loading validation dataset...")
-    val_dataset = MSMARCODataset(config['val_path'])
     val_loader = DataLoader(val_dataset, batch_size=config['batch_size'], shuffle=False)
     
     # Calculate MAE

@@ -12,10 +12,11 @@ import psutil
 import gc
 
 class CustomMSMARCODataset(Dataset):
-    def __init__(self, data_path, max_query_len=32, max_passage_len=256):
+    def __init__(self, data_path, max_query_len=32, max_passage_len=256, vocab_size=100000):
         self.data = []
         self.max_query_len = max_query_len
         self.max_passage_len = max_passage_len
+        self.vocab_size = vocab_size
         
         # Load and preprocess data
         with open(data_path, 'r') as f:
@@ -28,6 +29,10 @@ class CustomMSMARCODataset(Dataset):
                 # Process passages
                 for passage, selected in zip(passages, is_selected):
                     passage_text = passage['passage_text']
+                    
+                    # Clamp indices to valid range
+                    query = [min(idx, vocab_size - 1) for idx in query]
+                    passage_text = [min(idx, vocab_size - 1) for idx in passage_text]
                     
                     self.data.append({
                         'query': query,
@@ -62,7 +67,7 @@ class CustomTwoTowerModel(nn.Module):
         super().__init__()
         
         # Query tower
-        self.query_embedding = nn.Embedding(vocab_size, embedding_dim)
+        self.query_embedding = nn.Embedding(vocab_size, embedding_dim, padding_idx=0)
         self.query_rnn = nn.GRU(
             input_size=embedding_dim,
             hidden_size=hidden_dim,
@@ -73,7 +78,7 @@ class CustomTwoTowerModel(nn.Module):
         self.query_projection = nn.Linear(hidden_dim * 2, hidden_dim)
         
         # Passage tower
-        self.passage_embedding = nn.Embedding(vocab_size, embedding_dim)
+        self.passage_embedding = nn.Embedding(vocab_size, embedding_dim, padding_idx=0)
         self.passage_rnn = nn.GRU(
             input_size=embedding_dim,
             hidden_size=hidden_dim,
@@ -87,40 +92,83 @@ class CustomTwoTowerModel(nn.Module):
             nn.Linear(hidden_dim, 1)
         )
         self.passage_projection = nn.Linear(hidden_dim * 2, hidden_dim)
+        
+        # Initialize weights
+        self._init_weights()
+    
+    def _init_weights(self):
+        """Initialize weights with Xavier uniform initialization."""
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.xavier_uniform_(m.weight)
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
+            elif isinstance(m, nn.Embedding):
+                nn.init.xavier_uniform_(m.weight)
+            elif isinstance(m, nn.GRU):
+                for name, param in m.named_parameters():
+                    if 'weight' in name:
+                        nn.init.xavier_uniform_(param)
+                    elif 'bias' in name:
+                        nn.init.zeros_(param)
     
     def forward(self, query, passage):
-        # Query tower
-        query_emb = self.query_embedding(query)
-        query_rnn_out, _ = self.query_rnn(query_emb)
-        query_rep = self.query_projection(query_rnn_out[:, -1, :])
-        
-        # Passage tower
-        passage_emb = self.passage_embedding(passage)
-        passage_rnn_out, _ = self.passage_rnn(passage_emb)
-        
-        # Attention
-        attention_weights = self.passage_attention(passage_rnn_out)
-        attention_weights = torch.softmax(attention_weights, dim=1)
-        attended = torch.sum(passage_rnn_out * attention_weights, dim=1)
-        passage_rep = self.passage_projection(attended)
-        
-        # Similarity score
-        return torch.sum(query_rep * passage_rep, dim=1)
+        try:
+            # Clamp indices to valid range
+            query = torch.clamp(query, 0, self.query_embedding.num_embeddings - 1)
+            passage = torch.clamp(passage, 0, self.passage_embedding.num_embeddings - 1)
+            
+            # Query tower
+            query_emb = self.query_embedding(query)
+            query_rnn_out, _ = self.query_rnn(query_emb)
+            query_rep = self.query_projection(query_rnn_out[:, -1, :])
+            
+            # Passage tower
+            passage_emb = self.passage_embedding(passage)
+            passage_rnn_out, _ = self.passage_rnn(passage_emb)
+            
+            # Attention
+            attention_weights = self.passage_attention(passage_rnn_out)
+            attention_weights = torch.softmax(attention_weights, dim=1)
+            attended = torch.sum(passage_rnn_out * attention_weights, dim=1)
+            passage_rep = self.passage_projection(attended)
+            
+            # Similarity score
+            return torch.sum(query_rep * passage_rep, dim=1)
+        except RuntimeError as e:
+            if "CUDNN_STATUS_EXECUTION_FAILED" in str(e):
+                # Clear CUDA cache and retry
+                torch.cuda.empty_cache()
+                gc.collect()
+                return self.forward(query, passage)
+            raise e
 
 def train_step(model, optimizer, query_batch, pos_passage_batch, neg_passage_batch):
-    # Forward pass
-    pos_scores = model(query_batch, pos_passage_batch)
-    neg_scores = model(query_batch, neg_passage_batch)
-    
-    # Compute loss
-    loss = -torch.mean(torch.log(torch.sigmoid(pos_scores - neg_scores)))
-    
-    # Backward pass
-    optimizer.zero_grad()
-    loss.backward()
-    optimizer.step()
-    
-    return loss.item()
+    try:
+        # Forward pass
+        pos_scores = model(query_batch, pos_passage_batch)
+        neg_scores = model(query_batch, neg_passage_batch)
+        
+        # Compute loss
+        loss = -torch.mean(torch.log(torch.sigmoid(pos_scores - neg_scores)))
+        
+        # Backward pass
+        optimizer.zero_grad()
+        loss.backward()
+        
+        # Gradient clipping
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+        
+        optimizer.step()
+        
+        return loss.item()
+    except RuntimeError as e:
+        if "CUDNN_STATUS_EXECUTION_FAILED" in str(e):
+            # Clear CUDA cache and retry
+            torch.cuda.empty_cache()
+            gc.collect()
+            return train_step(model, optimizer, query_batch, pos_passage_batch, neg_passage_batch)
+        raise e
 
 def evaluate(model, query_batch, passage_batch, labels):
     with torch.no_grad():
@@ -142,14 +190,19 @@ def train_model(config):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Using device: {device}")
     
+    # Clear CUDA cache
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        gc.collect()
+    
     # Create models directory
     models_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'models')
     os.makedirs(models_dir, exist_ok=True)
     
-    # Create datasets
-    train_dataset = CustomMSMARCODataset(config['train_path'])
-    val_dataset = CustomMSMARCODataset(config['val_path'])
-    test_dataset = CustomMSMARCODataset(config['test_path'])
+    # Create datasets with vocab_size
+    train_dataset = CustomMSMARCODataset(config['train_path'], vocab_size=config['vocab_size'])
+    val_dataset = CustomMSMARCODataset(config['val_path'], vocab_size=config['vocab_size'])
+    test_dataset = CustomMSMARCODataset(config['test_path'], vocab_size=config['vocab_size'])
     
     # Create data loaders
     train_loader = DataLoader(train_dataset, batch_size=config['batch_size'], shuffle=True)
@@ -182,41 +235,49 @@ def train_model(config):
         batch_count = 0
         
         for batch in tqdm(train_loader, desc=f'Epoch {epoch+1}'):
-            batch_start_time = time.time()
-            batch_count += 1
-            
-            # Move batch to device
-            query = batch['query'].to(device)
-            pos_passage = batch['passage'].to(device)
-            
-            # Create negative samples
-            neg_batch = create_negative_samples(batch)
-            neg_passage = neg_batch['passage'].to(device)
-            
-            # Training step
-            loss = train_step(model, optimizer, query, pos_passage, neg_passage)
-            train_losses.append(loss)
-            
-            # Calculate gradient norms
-            total_norm = 0
-            for p in model.parameters():
-                if p.grad is not None:
-                    param_norm = p.grad.data.norm(2)
-                    total_norm += param_norm.item() ** 2
-            grad_norms.append(total_norm ** 0.5)
-            
-            batch_times.append(time.time() - batch_start_time)
-            
-            # Log metrics
-            if batch_count % 100 == 0:
-                wandb.log({
-                    'train/batch_loss': loss,
-                    'train/grad_norm': total_norm ** 0.5,
-                    'train/batch_time': time.time() - batch_start_time,
-                    'train/learning_rate': optimizer.param_groups[0]['lr'],
-                    'train/batch': batch_count,
-                    'train/epoch': epoch + 1
-                })
+            try:
+                batch_start_time = time.time()
+                batch_count += 1
+                
+                # Move batch to device
+                query = batch['query'].to(device)
+                pos_passage = batch['passage'].to(device)
+                
+                # Create negative samples
+                neg_batch = create_negative_samples(batch)
+                neg_passage = neg_batch['passage'].to(device)
+                
+                # Training step
+                loss = train_step(model, optimizer, query, pos_passage, neg_passage)
+                train_losses.append(loss)
+                
+                # Calculate gradient norms
+                total_norm = 0
+                for p in model.parameters():
+                    if p.grad is not None:
+                        param_norm = p.grad.data.norm(2)
+                        total_norm += param_norm.item() ** 2
+                grad_norms.append(total_norm ** 0.5)
+                
+                batch_times.append(time.time() - batch_start_time)
+                
+                # Log metrics
+                if batch_count % 100 == 0:
+                    wandb.log({
+                        'train/batch_loss': loss,
+                        'train/grad_norm': total_norm ** 0.5,
+                        'train/batch_time': time.time() - batch_start_time,
+                        'train/learning_rate': optimizer.param_groups[0]['lr'],
+                        'train/batch': batch_count,
+                        'train/epoch': epoch + 1
+                    })
+            except RuntimeError as e:
+                if "CUDNN_STATUS_EXECUTION_FAILED" in str(e):
+                    print(f"CUDA error in batch {batch_count}, retrying...")
+                    torch.cuda.empty_cache()
+                    gc.collect()
+                    continue
+                raise e
         
         # Validation
         model.eval()
@@ -224,18 +285,26 @@ def train_model(config):
         val_accuracies = []
         
         for batch in val_loader:
-            query = batch['query'].to(device)
-            passage = batch['passage'].to(device)
-            is_selected = batch['is_selected'].to(device)
-            
-            with torch.no_grad():
-                pos_scores = model(query, passage)
-                neg_scores = model(query, passage[torch.randperm(len(passage))])
-                loss = -torch.mean(torch.log(torch.sigmoid(pos_scores - neg_scores)))
-                val_losses.append(loss.item())
-            
-            accuracy = evaluate(model, query, passage, is_selected)
-            val_accuracies.append(accuracy)
+            try:
+                query = batch['query'].to(device)
+                passage = batch['passage'].to(device)
+                is_selected = batch['is_selected'].to(device)
+                
+                with torch.no_grad():
+                    pos_scores = model(query, passage)
+                    neg_scores = model(query, passage[torch.randperm(len(passage))])
+                    loss = -torch.mean(torch.log(torch.sigmoid(pos_scores - neg_scores)))
+                    val_losses.append(loss.item())
+                
+                accuracy = evaluate(model, query, passage, is_selected)
+                val_accuracies.append(accuracy)
+            except RuntimeError as e:
+                if "CUDNN_STATUS_EXECUTION_FAILED" in str(e):
+                    print("CUDA error in validation, skipping batch...")
+                    torch.cuda.empty_cache()
+                    gc.collect()
+                    continue
+                raise e
         
         # Calculate metrics
         avg_val_loss = np.mean(val_losses)
@@ -272,6 +341,11 @@ def train_model(config):
         print(f'  Val Loss: {avg_val_loss:.4f}')
         print(f'  Val Accuracy: {avg_val_accuracy:.4f}')
         print(f'  Best Epoch: {best_epoch} (Val Loss: {best_val_loss:.4f})')
+        
+        # Clear CUDA cache after each epoch
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            gc.collect()
     
     wandb.finish()
 
