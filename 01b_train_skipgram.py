@@ -86,16 +86,16 @@ def main():
 
         api = wandb.Api()
         artifact = api.artifact(
-            'maxime-downe-founders-and-coders/mlx7-week1-skipgram/'
+            'maxime-downe-founders-and-coders/search-engine/'
             f'model-weights:{args.artifact_version}')
-        artifact_dir = artifact.download()
+        artifact_dir = artifact.download(root=config.SKIPGRAM_CHECKPOINT_DIR)
 
         pth_files = [f for f in os.listdir(artifact_dir) if f.endswith('.pth')]
         if not pth_files:
             raise ValueError("No .pth files found in the artifact")
 
         model_path = os.path.join(artifact_dir, pth_files[0])
-        checkpoint = torch.load(model_path)
+        checkpoint = torch.load(map_location=dev, f=model_path)
         model.load_state_dict(checkpoint)
 
         try:
@@ -201,12 +201,15 @@ def main():
         if val_loss < best_val_loss:
             best_val_loss = val_loss
             torch.save(model.state_dict(), config.SKIPGRAM_BEST_MODEL_PATH)
+            best_artifact = wandb.Artifact('skipgram-best', type='model')
+            best_artifact.add_file(config.SKIPGRAM_BEST_MODEL_PATH)
+            wandb.log_artifact(best_artifact)
             print(
                 f'New best model saved at epoch {epoch+1} '
                 f'with validation loss {best_val_loss:.4f}'
             )
 
-        artifact = wandb.Artifact('model-weights', type='model')
+        artifact = wandb.Artifact('skipgram', type='model')
         artifact.add_file(checkpoint_path)
         wandb.log_artifact(artifact)
 
