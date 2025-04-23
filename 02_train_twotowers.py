@@ -1,5 +1,6 @@
 import argparse
 import datetime
+import shutil
 import torch
 from torch.utils.data import DataLoader
 import wandb
@@ -48,7 +49,13 @@ def main():
             'maxime-downe-founders-and-coders/search-engine/'
             f'{"model-weights" if args.artifact_version else "skipgram-best"}:'
             f'{args.artifact_version}')
-        artifact.download(root=config.SKIPGRAM_BEST_MODEL_PATH)
+        artifact_dir = artifact.download(root=config.SKIPGRAM_CHECKPOINT_DIR)
+        pth_files = [f for f in os.listdir(artifact_dir) if f.endswith('.pth')]
+        original_path = os.path.join(artifact_dir, pth_files[0])
+        custom_path = os.path.join(
+            config.SKIPGRAM_CHECKPOINT_DIR, 'best_model.pth'
+        )
+        shutil.copy(original_path, custom_path)
 
     # Load vocabulary
     vocab_to_int = pickle.load(open(config.VOCAB_TO_ID_PATH, 'rb'))
