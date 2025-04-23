@@ -128,6 +128,23 @@ def prepare_dataset():
     
     print(f"Processed {len(val_data)} validation examples")
     
+    # Process test data
+    print("\nProcessing test data...")
+    test_data = []
+    test_examples = list(dataset['test'])
+    
+    # Process in parallel batches
+    with Pool(num_workers) as pool:
+        batches = [(test_examples[i:i + batch_size], vocab) 
+                  for i in range(0, len(test_examples), batch_size)]
+        for batch_results in tqdm(pool.imap_unordered(
+            process_batch_wrapper, 
+            batches
+        ), total=len(batches), desc="Processing batches"):
+            test_data.extend(batch_results)
+    
+    print(f"Processed {len(test_data)} test examples")
+    
     # Save data in JSON format
     print(f"\nSaving train set ({len(train_data)} examples)...")
     with open('/root/search-engine/data/msmarco/train.json', 'w') as f:
@@ -137,6 +154,11 @@ def prepare_dataset():
     print(f"Saving validation set ({len(val_data)} examples)...")
     with open('/root/search-engine/data/msmarco/val.json', 'w') as f:
         for item in val_data:
+            f.write(json.dumps(item) + '\n')
+    
+    print(f"Saving test set ({len(test_data)} examples)...")
+    with open('/root/search-engine/data/msmarco/test.json', 'w') as f:
+        for item in test_data:
             f.write(json.dumps(item) + '\n')
     
     print("Dataset preparation complete!")
