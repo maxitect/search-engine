@@ -21,7 +21,7 @@ test_df = pd.read_parquet('ms_marco_test.parquet')
 
 
 # Evaluate word similarity for skipgram training
-def topk(mFoo):
+def topk(model):
     words = [
         'anarchism',
         'monarchy',
@@ -45,11 +45,13 @@ def topk(mFoo):
         'university'
     ]
     idx = vocab_to_int[words[random.randint(0, len(words) - 1)]]
-    vec = mFoo.emb.weight[idx].detach()
+    vec = model.in_embed.weight[idx].detach()
     with torch.no_grad():
         vec = torch.nn.functional.normalize(vec.unsqueeze(0), p=2, dim=1)
         emb = torch.nn.functional.normalize(
-            mFoo.emb.weight.detach(), p=2, dim=1)
+            model.in_embed.weight.detach(),
+            p=2, dim=1
+        )
         sim = torch.matmul(emb, vec.squeeze())
         top_val, top_idx = torch.topk(sim, 6)
         print('\nTop 5 words similar to "computer":')
