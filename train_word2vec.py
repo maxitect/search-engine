@@ -87,7 +87,7 @@ def train():
         correct = 0
         total = 0
         
-        with tqdm(range(0, len(train_data), batch_size) as pbar:
+        with tqdm(range(0, len(train_data), batch_size)) as pbar:
             pbar.set_description(f"Epoch {epoch+1}/{num_epochs}")
             
             for i in pbar:
