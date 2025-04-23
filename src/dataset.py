@@ -1,8 +1,10 @@
-import src.config as config
 import torch
 from torch.utils.data import Dataset
 import pickle
+import collections
+import numpy as np
 
+import src.config as config
 from src.utils.tokenise import preprocess
 
 
@@ -16,6 +18,27 @@ class Wiki(Dataset):
         self.tokens = [self.vocab_to_int[word] for word in self.corpus]
         self.skip_gram = skip_gram
 
+        # Calculate word frequency distribution for negative sampling
+        self._calculate_word_frequencies()
+
+    def _calculate_word_frequencies(self):
+        """Calculate word frequencies for negative sampling"""
+        word_counts = collections.Counter(self.corpus)
+        vocab_size = len(self.vocab_to_int)
+
+        # Initialize frequencies array with a small value to avoid zeros
+        self.word_freqs = np.ones(vocab_size) * 1e-5
+
+        # Fill in actual frequencies
+        for word, count in word_counts.items():
+            if word in self.vocab_to_int:
+                self.word_freqs[self.vocab_to_int[word]] = count
+
+        # Apply the 3/4 power as recommended in the paper
+        self.word_freqs = np.power(self.word_freqs, 0.75)
+        # Normalize to get probability distribution
+        self.word_freqs = self.word_freqs / np.sum(self.word_freqs)
+
     def __len__(self):
         return len(self.tokens)
 
@@ -26,13 +49,11 @@ class Wiki(Dataset):
             for j in range(idx - 2, idx + 3):
                 if j != idx and 0 <= j < len(self.tokens):
                     context.append((center, self.tokens[j]))
-
             if len(context) == 0:
                 if idx > 0:
                     context.append((center, self.tokens[idx-1]))
                 else:
                     context.append((center, self.tokens[idx+1]))
-
             context_idx = torch.randint(0, len(context), (1,)).item()
             return (
                 torch.tensor([context[context_idx][0]]),

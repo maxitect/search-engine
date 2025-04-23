@@ -8,7 +8,6 @@ from src.models.skipgram import SkipGram, negative_sampling_loss
 import src.config as config
 import os
 import argparse
-import numpy as np
 from torch.utils.data import random_split
 
 from src.utils.lr_scheduler import get_lr_scheduler
@@ -53,17 +52,21 @@ def main():
 
     # Create data loaders
     train_dl = torch.utils.data.DataLoader(
-        dataset=train_ds, batch_size=config.SKIPGRAM_BATCH_SIZE, shuffle=True)
+        dataset=train_ds,
+        batch_size=config.SKIPGRAM_BATCH_SIZE,
+        shuffle=True
+    )
     val_dl = torch.utils.data.DataLoader(
-        dataset=val_ds, batch_size=config.SKIPGRAM_BATCH_SIZE)
+        dataset=val_ds,
+        batch_size=config.SKIPGRAM_BATCH_SIZE
+    )
     test_dl = torch.utils.data.DataLoader(
-        dataset=test_ds, batch_size=config.SKIPGRAM_BATCH_SIZE)
+        dataset=test_ds,
+        batch_size=config.SKIPGRAM_BATCH_SIZE
+    )
 
-    # Calculate word frequency distribution for negative sampling
-    word_freq = np.array(full_ds.word_freqs)
-    word_freq = np.power(word_freq, 0.75)  # Raise to 3/4 power as per paper
-    # Normalize to get probability distribution
-    word_freq = word_freq / np.sum(word_freq)
+    # Get word frequencies from dataset
+    word_freq = full_ds.word_freqs
 
     # Model instantiation with both input and output embeddings
     voc_size = config.VOCAB_SIZE
