@@ -4,10 +4,11 @@ import wandb
 import torch
 import src.dataset as dataset
 import src.evaluate as evaluate
-import src.model as model
+from src.models.skipgram import SkipGram, negative_sampling_loss
 import src.config as config
 import os
 import argparse
+import numpy as np
 
 from src.utils.lr_scheduler import get_lr_scheduler
 
@@ -25,6 +26,12 @@ def main():
         default=None,
         help='Wandb artifact version to resume from (e.g., v4)'
     )
+    parser.add_argument(
+        '--neg_samples',
+        type=int,
+        default=15,
+        help='Number of negative samples per positive sample'
+    )
     args = parser.parse_args()
 
     torch.manual_seed(42)
@@ -35,13 +42,24 @@ def main():
     dl = torch.utils.data.DataLoader(
         dataset=ds, batch_size=config.SKIPGRAM_BATCH_SIZE)
 
-    model_args = (config.VOCAB_SIZE, config.EMBEDDING_DIM)
-    mFoo = model.SkipGram(*model_args)
+    # Calculate word frequency distribution for negative sampling
+    word_freq = np.array(ds.word_freqs)
+    word_freq = np.power(word_freq, 0.75)  # Raise to 3/4 power as per paper
+    # Normalize to get probability distribution
+    word_freq = word_freq / np.sum(word_freq)
+
+    # Model instantiation with both input and output embeddings
+    voc_size = config.VOCAB_SIZE
+    emb_dim = config.EMBEDDING_DIM
+
+    model_args = (voc_size, emb_dim)
+    mFoo = SkipGram(*model_args)
     print('mFoo:params', sum(p.numel() for p in mFoo.parameters()))
 
     start_epoch = 0
     best_loss = float('inf')
     global_step = 0
+    num_neg_samples = args.neg_samples
 
     if args.resume and args.artifact_version:
         print(f"Resuming training from artifact {args.artifact_version}")
@@ -81,8 +99,6 @@ def main():
         total_steps=total_steps
     )
 
-    criterion = torch.nn.CrossEntropyLoss()
-
     run_name = f'skipgram_{ts}_resumed' if args.resume else f'skipgram_{ts}'
     wandb.init(project='search-engine', name=run_name)
 
@@ -92,9 +108,22 @@ def main():
         prgs = tqdm.tqdm(dl, desc=f'Epoch {epoch+1}', leave=False)
         for step, (ipt, trg) in enumerate(prgs):
             ipt, trg = ipt.to(dev), trg.to(dev)
+            batch_size = ipt.size(0)
+
+            # Sample negative words based on
+            # unigram distribution raised to 3/4 power
+            neg_samples = torch.multinomial(
+                torch.tensor(word_freq, device=dev),
+                batch_size * num_neg_samples,
+                replacement=True
+            ).view(batch_size, num_neg_samples)
+
             opFoo.zero_grad()
-            out = mFoo(ipt)
-            loss = criterion(out, trg.view(-1))
+            # Get embeddings for input, positive and negative samples
+            input_embeds, pos_embeds, neg_embeds = mFoo(ipt, trg, neg_samples)
+
+            # Calculate loss using negative sampling
+            loss = negative_sampling_loss(input_embeds, pos_embeds, neg_embeds)
             loss.backward()
             opFoo.step()
 
