@@ -1,3 +1,4 @@
+import random
 import torch
 from torch.utils.data import Dataset
 import pickle
@@ -85,36 +86,26 @@ class MSMARCOTripletDataset(Dataset):
         # Extract data from DataFrame
         queries = df['queries']
         documents = df['documents']
-        labels = df['labels']
 
         # Process lists of lists structure
         for i in range(len(queries)):
             query = queries[i]
             # List of documents for this query
-            docs_list = documents[i].tolist()
-            # List of labels for these documents
-            labels_list = labels[i].tolist()
+            pos_docs = documents[i].tolist()
 
             # Skip if we don't have exactly one positive document
-            if sum(labels_list) != 1:
+            if len(pos_docs) < 6:
                 continue
 
-            # Find positive and negative documents
-            pos_idx = labels_list.index(1)
-            neg_indices = [j for j in range(
-                len(labels_list)) if labels_list[j] == 0]
+            # Generate random indices for negative sampling
+            neg_indices = random.sample(range(len(queries)), 5)
+            print(neg_indices)
 
-            # Skip if no negatives
-            if not neg_indices:
-                continue
-
-            pos_doc = docs_list[pos_idx]
-
-            # Limit number of negative samples per positive example
-            neg_samples = min(max_neg_samples, len(neg_indices))
-            for j in range(neg_samples):
-                neg_doc = docs_list[neg_indices[j]]
-                self.triplets.append((query, pos_doc, neg_doc))
+            for j, neg_idx in enumerate(neg_indices):
+                selected_set = documents[neg_idx]
+                index = min(len(selected_set) - 1, j)
+                neg_doc = selected_set[index]
+                self.triplets.append((query, pos_docs[j], neg_doc))
 
         self.max_query_len = max_query_len
         self.max_doc_len = max_doc_len
