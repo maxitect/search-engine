@@ -1,11 +1,13 @@
 import random
 import pandas as pd
-from src.dataset import MSMARCOTripletDataset
-from src.models.skipgram import negative_sampling_loss
-from src.models.twotowers import triplet_loss_function
-import src.config as config
 import torch
 import pickle
+
+from src.dataset import MSMARCOTripletDataset
+from src.models.skipgram import negative_sampling_loss
+from src.models.twotowers import cosine_similarity, triplet_loss_function
+import src.config as config
+
 
 dev = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
@@ -112,31 +114,19 @@ def evaluate_progress(qry_tower, doc_tower, step):
         max_doc_len=config.MAX_DOC_LEN
     )
 
-    if len(eval_dataset) == 0:
-        print("No evaluation examples available")
-        return
+    # Get a random triplet from the evaluation dataset
+    random_idx = random.randint(0, len(eval_dataset) - 1)
+    query, pos_doc, neg_doc = eval_dataset.triplets[random_idx]
 
-    # Get a random query from the test set
-    random_idx = random.randint(0, len(test_df) - 1)
-    query = test_df.iloc[random_idx]['queries']
-    documents = test_df.iloc[random_idx]['documents']
-    labels = test_df.iloc[random_idx]['labels']
+    query_triplets = [t for t in eval_dataset.triplets if t[0] == query]
+
+    # Extract unique positive and negative documents
+    pos_docs = list(set([t[1] for t in query_triplets]))
+    neg_docs = list(set([t[2] for t in query_triplets]))
 
     print(f"\nQuery: {query}")
-
-    # Separate positive and negative passages
-    pos_indices = [i for i, label in enumerate(labels) if label == 1]
-    neg_indices = [i for i, label in enumerate(
-        labels) if label == 0][:5]  # Limit to 5 negatives
-
-    if not pos_indices:
-        print("  No positive passages found for this query.")
-        return
-
     print(
-        f"  Found {len(pos_indices)} positive and "
-        f"{len(neg_indices)} negative passages"
-    )
+        f"  Found {len(pos_docs)} positive and {len(neg_docs)} negative")
 
     # Process query
     query_ids = eval_dataset._tokenise(
@@ -148,27 +138,23 @@ def evaluate_progress(qry_tower, doc_tower, step):
     similarities = []
 
     # Process positive passages
-    for i in pos_indices:
-        doc = documents[i]
+    for doc in pos_docs:
         doc_ids = eval_dataset._tokenise(
             doc, eval_dataset.max_doc_len).unsqueeze(0).to(dev)
-
         with torch.no_grad():
             doc_embedding = doc_tower(doc_ids)
-            similarity = torch.sum(
-                query_embedding * doc_embedding, dim=1).item()
+            similarity = cosine_similarity(
+                query_embedding, doc_embedding).item()
             similarities.append((doc, similarity, "POSITIVE"))
 
     # Process negative passages
-    for i in neg_indices:
-        doc = documents[i]
+    for doc in neg_docs:
         doc_ids = eval_dataset._tokenise(
             doc, eval_dataset.max_doc_len).unsqueeze(0).to(dev)
-
         with torch.no_grad():
             doc_embedding = doc_tower(doc_ids)
-            similarity = torch.sum(
-                query_embedding * doc_embedding, dim=1).item()
+            similarity = cosine_similarity(
+                query_embedding, doc_embedding).item()
             similarities.append((doc, similarity, "NEGATIVE"))
 
     # Sort by similarity
@@ -191,17 +177,14 @@ def evaluate_progress(qry_tower, doc_tower, step):
         1 for _, _, label in similarities[:5] if label == "POSITIVE")
     print(
         f"  Positive passages in top-5: {top5_positives} "
-        f"out of {len(pos_indices)}")
+        f"out of {len(pos_docs)}")
 
     # Calculate test loss
     test_loss = 0.0
     num_triplets = 0
 
-    for pos_idx in pos_indices:
-        for neg_idx in neg_indices:
-            pos_doc = documents[pos_idx]
-            neg_doc = documents[neg_idx]
-
+    for pos_doc in pos_docs:
+        for neg_doc in neg_docs:
             query_ids = eval_dataset._tokenise(
                 query, eval_dataset.max_query_len).unsqueeze(0).to(dev)
             pos_doc_ids = eval_dataset._tokenise(

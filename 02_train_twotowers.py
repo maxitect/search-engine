@@ -143,15 +143,9 @@ def main():
         f'{sum(p.numel() for p in two_towers.parameters())}'
     )
 
-    # Define optimizer with no duplicates
-    all_params = set()
-    for param in list(qry_tower.parameters()) + list(doc_tower.parameters()):
-        all_params.add(param)
-
     optimiser = torch.optim.Adam(
-        all_params,
-        lr=config.TWOTOWERS_LR,
-        weight_decay=config.WEIGHT_DECAY
+        list(qry_tower.parameters()) + list(doc_tower.parameters()),
+        lr=config.TWOTOWERS_LR
     )
 
     # Learning rate scheduler - remove verbose flag
