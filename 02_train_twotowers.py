@@ -146,7 +146,8 @@ def main():
     # Define optimizer
     optimiser = torch.optim.Adam(
         list(qry_tower.parameters()) + list(doc_tower.parameters()),
-        lr=config.TWOTOWERS_LR
+        lr=config.TWOTOWERS_LR,
+        weight_decay=config.WEIGHT_DECAY
     )
 
     # Learning rate scheduler
@@ -159,6 +160,7 @@ def main():
 
     # Training loop
     best_val_loss = float('inf')
+    patience_counter = 0
 
     for epoch in range(config.TWOTOWERS_EPOCHS):
         # Training
@@ -185,6 +187,7 @@ def main():
 
             # Backward pass and optimize
             loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimiser.step()
 
             train_loss += loss.item()
@@ -270,14 +273,21 @@ def main():
             best_artifact = wandb.Artifact('two-towers-best', type='model')
             best_artifact.add_file(config.TWOTOWERS_BEST_MODEL_PATH)
             wandb.log_artifact(best_artifact)
+            patience_counter = 0
             print(
                 f'New best model saved at epoch {epoch+1} '
                 f'with validation loss {best_val_loss:.4f}'
             )
+        else:
+            patience_counter += 1
 
         artifact = wandb.Artifact('two-towers', type='model')
         artifact.add_file(checkpoint_path)
         wandb.log_artifact(artifact)
+
+        if patience_counter >= config.TWOTOWERS_PATIENCE:
+            print(f'Early stopping triggered after {epoch+1} epochs')
+            break
 
     print(f'Training completed! Best validation loss: {best_val_loss:.4f}')
     wandb.finish()
