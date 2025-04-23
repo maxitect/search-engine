@@ -191,6 +191,9 @@ def main():
 
             # Backward pass and optimize
             loss.backward()
+            torch.nn.utils.clip_grad_norm_(
+                two_towers.parameters(), max_norm=1.0
+            )
             optimiser.step()
 
             train_loss += loss.item()
