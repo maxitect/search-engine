@@ -44,3 +44,30 @@ def get_word2vec_from_checkpoint(checkpoint_path: str):
         model = SkipGram(vocab_size, embedding_dim)
     model.load_state_dict(checkpoint['model_state_dict'])
     return model
+
+
+class MeanPooledWordEmbedder:
+    def __init__(self, tokeniser, w2v_model, device):
+        self.tokeniser = tokeniser
+        self.w2v_model = w2v_model
+        self.device = device
+        self.w2v_model = self.w2v_model.to(device)
+
+    def embed_string(self, q: str):
+        """
+        Embed a string into a mean-pooled word embedding shape (D,).
+
+        Args:
+            q: The string to embed.
+            tokeniser: The tokeniser instance.
+            w2v_model: The word embedding model instance.
+
+        Returns:
+            A tensor of shape (D,).
+        """
+        with torch.no_grad():
+            token = self.tokeniser.tokenise_string(q)
+            embedding = self.w2v_model.forward(
+                torch.tensor(token).to(self.device),
+            ).mean(dim=0)
+        return embedding

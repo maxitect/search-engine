@@ -61,8 +61,11 @@ source ~/miniconda3/bin/activate
 # Create conda environment
 conda env create --file environment.yml
 
-# conda install conda-forge::wandb
-# conda install -c huggingface -c conda-forge datasets
+# Updates conda
+conda update -n base -c defaults conda
+
+# Update environment
+conda activate ss-env
 
 # Login manually
 wandb login
