@@ -8,6 +8,7 @@ import pandas as pd
 from tqdm import tqdm
 import os
 import src.models.twotowers as model
+from src.models.skipgram import SkipGram
 import src.config as config
 from src.dataset import MSMARCOTripletDataset
 from src.evaluate import evaluate_progress
@@ -90,7 +91,7 @@ def main():
     print(f'Validation batch size: {len(val_dataloader)}')
 
     # Load pretrained SkipGram model
-    skipgram = model.SkipGram(len(vocab_to_int), config.EMBEDDING_DIM)
+    skipgram = SkipGram(len(vocab_to_int), config.EMBEDDING_DIM)
     skipgram.load_state_dict(torch.load(
         map_location=dev,
         f=config.SKIPGRAM_BEST_MODEL_PATH))
