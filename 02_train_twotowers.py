@@ -273,3 +273,7 @@ def main():
 
     print(f'Training completed! Best validation loss: {best_val_loss:.4f}')
     wandb.finish()
+
+
+if __name__ == "__main__":
+    main()
