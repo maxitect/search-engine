@@ -77,7 +77,7 @@ class MSMARCOTripletDataset(Dataset):
         df,
         max_query_len=20,
         max_doc_len=200,
-        max_neg_samples=5
+        max_samples=5
     ):
         self.vocab_to_int = pickle.load(
             open(config.VOCAB_TO_ID_PATH, 'rb'))
@@ -98,14 +98,14 @@ class MSMARCOTripletDataset(Dataset):
                 continue
 
             # Generate random indices for negative sampling
-            neg_indices = random.sample(range(len(queries)), 5)
-            print(neg_indices)
+            pos_indices = random.sample(range(len(pos_docs)), max_samples)
+            neg_indices = random.sample(range(len(queries)), max_samples)
 
             for j, neg_idx in enumerate(neg_indices):
                 selected_set = documents[neg_idx]
                 index = min(len(selected_set) - 1, j)
                 neg_doc = selected_set[index]
-                self.triplets.append((query, pos_docs[j], neg_doc))
+                self.triplets.append((query, pos_docs[pos_indices], neg_doc))
 
         self.max_query_len = max_query_len
         self.max_doc_len = max_doc_len
