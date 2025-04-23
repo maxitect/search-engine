@@ -3,18 +3,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
-class SkipGram(nn.Module):
-    def __init__(self, voc, emb):
-        super().__init__()
-        self.emb = nn.Embedding(num_embeddings=voc, embedding_dim=emb)
-        self.ffw = nn.Linear(in_features=emb, out_features=voc, bias=False)
-
-    def forward(self, inpt):
-        emb = self.emb(inpt)
-        out = self.ffw(emb.squeeze(1))
-        return out
-
-
 class TowerBase(nn.Module):
     def __init__(
             self,
@@ -80,7 +68,7 @@ class QryTower(TowerBase):
     def __init__(
             self,
             vocab_size,
-            embedding_dim=300,
+            embedding_dim=256,
             hidden_dim=256,
             output_dim=128,
             dropout_rate=0.2,
