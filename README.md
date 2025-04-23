@@ -4,6 +4,8 @@ A search engine which takes in queries and produces a list of relevant documents
 
 Semantic search is a data searching technique that focuses on understanding the contextual meaning and intent behind a user’s search query, rather than only matching keywords.
 
+![](media/frontend.png)
+
 ## Deliverable
 
 - Inputs: a query, of any length
@@ -11,38 +13,74 @@ Semantic search is a data searching technique that focuses on understanding the 
 
 ## Training
 
+### Dataset
+
+The MS Marco Dataset is available on HuggingFace. 
+
 In training
 
 - Inputs: a query sentence
 - Outputs: the id of the most similar document
 
+### Word Embeddings
+
+By default, we could use some w2v embeddings trained on text8.
+
 ### Loss function
 
-Hinge loss
+
+Loss function (Hinged triplet loss)
 
 - Want high loss when positive distances are large, and when negative distances are small
-- Want no loss if the distances are 'far enough' by a margin
+- Want no loss if the distances are 'far enough' by a margin $\Delta$
 
-Loss function
-$$L = \frac{1}{B}\sum_{B} \big [ \max(\text{dist}(q,p^{+}) - \frac{1}{K} \sum_K \text{dist}(q,p^{-}_k) , 0\big)]$$
+We define a triplet loss for batch size $B$, query $q_{i}$, positive sample $p_{i}^{+}$
 
-## MS Marco Dataset
+$$L = \frac{1}{B}\sum_{i=0}^{B-1} \bigg [ \max(\text{dist}(q_{i},p_{i}^{+}) - \frac{1}{N} \sum_{j=0}^{N-1} \text{dist}(q_i,p^{-}_{i,j}) + \Delta , 0)\bigg]$$
 
-Available on HuggingFace.
+The distance function taken is 1- cosine similarity.
 
-## Potential pitfalls
+
+Training scheme (Negative mining)
+
+The paper proposes three types of negatives
+
+1. Random negatives
+2. BM25
+3. Gold negatives
+
+
+## Evaluation and Results
+
+The best way of evaluating the model is to use a top-k accuracy.
+
+Experiments
+
+
+
+| Setup| Training accuracy (%) | Validation accuracy (%) |
+| --| --| --|
+| Tower MLP, hard negatives| 10 | ~10 |
+|Tower MLP, random negatives | 30 | 25 |
+
+A baseline would be random guessing and the baseline accuracy is $1/(N+1)$. For $N = 20$, this is $4.8\%$.
+
+Potential pitfalls
 
 1. Word not included in the tokeniser (not in Wikipedia/ or niche words), this is especially pertinent for acronyms. Example, we had a query called 'what is rba', which turned into '['what', 'is', '<UNK>']' in tokenised form.
-
-### Notes
-1. I trained two models with either higher
 
 
 ## Deployment
 
+Create the relevant databases. This is most readily performed on a GPU enabled computer
 ```bash
 python3 create_db.py
+```
 
+Running the search engine for the front-end
+
+```bash
+streamlit run app.py
 ```
 
 
@@ -52,11 +90,13 @@ Conda
 
 ```bash
 # Install miniconda for the system
+# From https://www.anaconda.com/docs/getting-started/miniconda/install#linux
 mkdir -p ~/miniconda3
 wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -O ~/miniconda3/miniconda.sh
 bash ~/miniconda3/miniconda.sh -b -u -p ~/miniconda3
 rm ~/miniconda3/miniconda.sh
 source ~/miniconda3/bin/activate
+conda init --all
 
 # Create conda environment
 conda env create --file environment.yml
@@ -70,7 +110,17 @@ conda activate ss-env
 # Login manually
 wandb login
 huggingface-cli login
+```
 
+To activate
+
+```bash 
+conda activate ss-env
+```
+
+Git setup
+
+```bash
 # Add Git credentials
 git config --global user.name ""
 git config --global user.email ""
@@ -80,10 +130,15 @@ git config --global user.email ""
 
 Precompute all word vectors using the skipgram model and save as a dictionary
 
-https://www.anaconda.com/docs/getting-started/miniconda/install#linux
+
 
 Setup your HF tokens
 
 ## References
 
 Karpukhin, Vladimir, Barlas Oğuz, Sewon Min, Patrick Lewis, Ledell Wu, Sergey Edunov, Danqi Chen, and Wen-tau Yih. ‘Dense Passage Retrieval for Open-Domain Question Answering’. arXiv, 30 September 2020. https://doi.org/10.48550/arXiv.2004.04906.
+
+The landmark paper for this is DPR, which compares it to other sparse methods like BM25. It notes
+- Methods like BM25 are sensitive to highly selective keywords and phrases, but cannot capture lexical variations or semantic relationships well. In contrast, DPR excels at semantic representation, but might lack sufficient capacity to represent salient phrases which appear rarely
+
+

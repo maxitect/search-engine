@@ -152,3 +152,4 @@ def skipgram_loss(
     # loss = -(pos.mean() + neg.mean()) / B
     loss = -(pos.sum() + neg.sum()) / B
     return loss
+

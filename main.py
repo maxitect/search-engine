@@ -11,11 +11,12 @@ import wandb
 from engine.data import MSMarcoDataset
 from engine.model import Encoder, TripletLoss
 from engine.text import setup_language_models, MeanPooledWordEmbedder
-from engine.utils import get_device
+from engine.utils import get_device, get_wandb_checkpoint_path
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
 
+def get_gensim()
 
 def run_sanity_check(
     q_vectors, pos_vectors, neg_vectors,
@@ -40,33 +41,58 @@ def run_sanity_check(
         q_neg_sim = torch.cosine_similarity(
             q_vectors[:, :, None], neg_vectors,
         )
+        # Positive sample is at index 0, so check whether the argmax is 0
+        # and subsequently count
         num_correct = (
             torch.cat([q_pos_sim[:, None], q_neg_sim], 1).argmax(axis=1) == 0
         ).sum()
 
-    # logger.info(f'q_pos_sim: {q_pos_sim}')
-    # logger.info(f'q_neg_sim: {q_neg_sim}')
-
     # Calculate averaged accuracy over the batch
-    accuracy = num_correct/B
+    accuracy = num_correct/ B
     return accuracy
 
 
 class Trainer:
     def __init__(
-        self, batch_size: int, num_negative_samples: int,
+        self, batch_size: int, 
+        num_negative_samples: int, 
+        mode: str,
+        embeddings: str,
         device: torch.device,
         log_to_wandb: bool = False,
     ):
 
         self.batch_size = batch_size
         self.K = num_negative_samples
+        self.mode = mode
+        self.embeddings = embeddings
         self.device = device
         self.log_to_wandb = log_to_wandb
 
         # Set up datasets and dataloaders
-        self.train_ds = MSMarcoDataset('train', num_negative_samples)
-        self.val_ds = MSMarcoDataset('validation', num_negative_samples)
+        self.train_ds = MSMarcoDataset('train', mode, num_negative_samples)
+        self.val_ds = MSMarcoDataset('validation', mode, num_negative_samples)
+
+        if embeddings not in ['self-trained', 'word2vec-google-news-300']:
+            raise ValueError(f'Invalid embeddings: {embeddings}')
+
+        # Set up Mean Pooled sentence embedding model
+        if embeddings == 'self-trained':
+            self.tokeniser, self.w2v_model = setup_language_models()
+
+            self.sentence_embedder = MeanPooledWordEmbedder(
+                self.tokeniser,
+                self.w2v_model,
+                device,
+            )
+            self.embed_fn = self.sentence_embedder.embed_string
+        elif embeddings == 'word2vec-google-news-300':
+            self.embed_fn = self.sentence_embedder.embed_string
+
+        self.collate_fn = partial(
+            self.collate_fn_marco,
+            embed_fn=self.embed_fn,
+        )
 
         self.train_dl = DataLoader(
             self.train_ds, batch_size=self.batch_size,
@@ -81,20 +107,7 @@ class Trainer:
             drop_last=True,
         )
 
-        # Set up Mean Pooled sentence embedding model
-        self.tokeniser, self.w2v_model = setup_language_models()
 
-        self.sentence_embedder = MeanPooledWordEmbedder(
-            self.tokeniser,
-            self.w2v_model,
-            device,
-        )
-        self.embed_fn = self.sentence_embedder.embed_string
-
-        self.collate_fn = partial(
-            self.collate_fn_marco,
-            embed_fn=self.embed_fn,
-        )
 
     def collate_fn_marco(self, batch, embed_fn) -> tuple[
         torch.Tensor,
@@ -253,12 +266,9 @@ class Trainer:
         optimiser: torch.optim.Optimizer,
         batches_print_frequency: int = 200,
     ):
-        if self.log_to_wandb:
-            run = wandb.init(
-                entity='kwokkenton-individual',
-                project='mlx-week2-search-engine',
-                config={
-                    'embeddings': 'self-trained',
+        config = {
+                    'embeddings': self.embeddings,
+                    'mode': self.mode,
                     'model': 'towers-mlp',
                     'epochs': epochs,
                     'batch_size': self.batch_size,
@@ -266,7 +276,15 @@ class Trainer:
                     'lr': lr,
                     'D_hidden': D_hidden,
                     'D_out': D_out,
-                },
+                }
+        
+        logger.info(f'Training config: {config}')
+
+        if self.log_to_wandb:
+            run = wandb.init(
+                entity='kwokkenton-individual',
+                project='mlx-week2-search-engine',
+                config=config,
             )
 
         for epoch in range(epochs):
@@ -314,7 +332,9 @@ if __name__ == '__main__':
     batch_size = 32
     K = 20
     lr = 5e-4
-
+    mode = 'random'
+    embeddings = 'self-trained'
+    num_epochs = 5
     # Model configs
     D_hidden = 100
     D_out = 100
@@ -324,6 +344,8 @@ if __name__ == '__main__':
     trainer = Trainer(
         batch_size,
         num_negative_samples=K,
+        mode=mode,
+        embeddings=embeddings,
         log_to_wandb=log_to_wandb,
         device=device,
     )
@@ -341,9 +363,21 @@ if __name__ == '__main__':
         list(query_encoder.parameters()) + list(doc_encoder.parameters()), lr=lr,
     )
 
+    # Load previously trained model
+    checkpoint_path = get_wandb_checkpoint_path(
+        'kwokkenton-individual/mlx-week2-search-engine/towers_mlp:v19',
+    )
+
+    # Load the model
+    checkpoint = torch.load(
+        checkpoint_path, map_location=device, weights_only=True,
+    )
+    query_encoder.load_state_dict(checkpoint['query_encoder_state_dict'])
+    doc_encoder.load_state_dict(checkpoint['doc_encoder_state_dict'])
+
     triplet_loss = TripletLoss()
     trainer.train(
-        epochs=10,
+        epochs=num_epochs,
         query_encoder=query_encoder,
         doc_encoder=doc_encoder,
         triplet_loss=triplet_loss,

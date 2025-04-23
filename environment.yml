@@ -16,6 +16,7 @@ dependencies:
   - tqdm
   - pre-commit
   - streamlit
+  - gensim
   - pip:
     - wandb
     - fastparquet

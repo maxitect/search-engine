@@ -15,7 +15,7 @@ def load_ms_marco() -> DatasetDict:
 
 
 class MSMarcoDataset(Dataset):
-    def __init__(self, split: str, num_negative_samples: int = 10):
+    def __init__(self, split: str, mode: str, num_negative_samples: int = 10):
         """Dataset for training a retrieval model, giving a query and a list of
             positive and negative answers. All hard negatives are returned, and
             a number of other negatives are sampled randomly from the dataset.
@@ -31,13 +31,19 @@ class MSMarcoDataset(Dataset):
 
         if split not in ['train', 'validation', 'test']:
             raise ValueError(f'Invalid split: {split}')
+        
+        if mode not in ['hard', 'random']:
+            raise ValueError(f'Invalid mode: {mode}')
+        
         ds = load_ms_marco()[split]
         logger.info(f'Loaded {split} dataset')
+
+        # Get rows with 1 positive answer
         self.rows_with_k_answers = self.rows_k_answers(ds, k=1)
         self.ds = ds.select(self.rows_with_k_answers)
         logger.info(f'Selected {len(self.ds)} rows with 1 answer')
         self.num_negative_samples = num_negative_samples
-
+        self.mode = mode
     def __len__(self):
         return len(self.ds)
 
@@ -52,30 +58,38 @@ class MSMarcoDataset(Dataset):
             negative_answers: List[str])
         """
         # Want positive and negative samples
-        query, positive_answer, negative_answers = self._get_entry_item(idx)
-        num_hard_negatives = len(negative_answers)
-        if num_hard_negatives >= self.num_negative_samples:
-            # randomly select from the negative answers
-            negative_answers = random.sample(
-                negative_answers, self.num_negative_samples,
-            )
-        else:
-            num_random_negatives = self.num_negative_samples - num_hard_negatives
-            random_answers = self._get_random_negative_samples(
-                idx,
-                num_samples=num_random_negatives,
-            )
-            negative_answers.extend(random_answers)
+        if self.mode == 'hard':
+            query, positive_answer, negative_answers = self._get_entry_item_hard(idx)
+
+        elif self.mode == 'random':
+            query, positive_answer, negative_answers = self._get_entry_item_random(idx)
+
         return query, positive_answer, negative_answers
+    
+    def _get_entry_item_random(self, idx):
+        # Treat all 'passage_texts' as positive answers
+        row = self.ds[idx]
+        query = row['query']
+        positives = row['passages']['passage_text']
 
-    def _get_entry_item(self, idx):
+        # Randomly select one positive answer
+        positive_answer = positives[random.randint(0, len(positives) - 1)]
 
+        # Get random negatives
+        negatives = self._get_random_negative_samples(
+            idx,
+            num_samples=self.num_negative_samples,
+        )
+        return query, positive_answer, negatives
+
+    def _get_entry_item_hard(self, idx):
         row = self.ds[idx]
         query = row['query']
 
         # Get positive and negative answers
         positive_answer = []
         negative_answers = []
+
         for text, is_selected in zip(
             row['passages']['passage_text'],
             row['passages']['is_selected'],
@@ -85,6 +99,23 @@ class MSMarcoDataset(Dataset):
             else:
                 negative_answers.append(text)
         assert len(positive_answer) == 1, 'Only one positive answer'
+
+        # Fill to num_negative_samples
+        num_hard_negatives = len(negative_answers)
+        if num_hard_negatives >= self.num_negative_samples:
+            # Too many hard negatives: randomly select from the negative answers
+            negative_answers = random.sample(
+                negative_answers, self.num_negative_samples,
+            )
+        else:
+            # Not enough hard negatives: get random negatives
+            num_random_negatives = self.num_negative_samples - num_hard_negatives
+            random_answers = self._get_random_negative_samples(
+                idx,
+                num_samples=num_random_negatives,
+            )
+            negative_answers.extend(random_answers)
+
         return query, positive_answer[0], negative_answers
 
     def rows_k_answers(self, ds, k=1):
