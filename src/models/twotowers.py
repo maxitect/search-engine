@@ -18,7 +18,7 @@ class TowerBase(nn.Module):
 
         # Set up embedding layer (either from SkipGram or new)
         if skipgram_model is not None:
-            self.embedding = skipgram_model.emb
+            self.embedding = skipgram_model.in_embed
             self.embedding.weight.requires_grad = not freeze_embeddings
         else:
             self.embedding = nn.Embedding(vocab_size, embedding_dim)
