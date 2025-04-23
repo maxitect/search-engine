@@ -6,7 +6,7 @@ import pickle
 import pandas as pd
 from tqdm import tqdm
 import os
-import src.model as model
+import src.models.twotowers as model
 import src.config as config
 from src.dataset import MSMARCOTripletDataset
 from src.evaluate import evaluate_progress
