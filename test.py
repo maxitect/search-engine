@@ -37,7 +37,13 @@ def get_similar_words(model, word, word2idx, idx2word, top_k=5):
 def load_model(model_path="data/word2vec/word2vec_cbow_final.pt"):
     """Load the trained model and vocabulary"""
     # Load the saved embeddings and vocabulary
-    checkpoint = torch.load(model_path, map_location=torch.device('cpu'))
+    try:
+        # First try with weights_only=True (default in PyTorch 2.6)
+        checkpoint = torch.load(model_path, map_location=torch.device('cpu'), weights_only=True)
+    except Exception as e:
+        # If that fails, try with weights_only=False (old behavior)
+        print("Warning: Loading with weights_only=True failed. Trying with weights_only=False...")
+        checkpoint = torch.load(model_path, map_location=torch.device('cpu'), weights_only=False)
     
     if 'embeddings' in checkpoint:
         # Final model format
@@ -56,7 +62,12 @@ def load_model(model_path="data/word2vec/word2vec_cbow_final.pt"):
     else:
         # Checkpoint format
         vocab_path = model_path.replace(model_path.split('/')[-1], 'word2vec_cbow_final.pt')
-        vocab_data = torch.load(vocab_path, map_location=torch.device('cpu'))
+        try:
+            vocab_data = torch.load(vocab_path, map_location=torch.device('cpu'), weights_only=True)
+        except Exception as e:
+            print("Warning: Loading vocabulary with weights_only=True failed. Trying with weights_only=False...")
+            vocab_data = torch.load(vocab_path, map_location=torch.device('cpu'), weights_only=False)
+            
         vocab = vocab_data['vocab']
         
         # Create word to index mapping
