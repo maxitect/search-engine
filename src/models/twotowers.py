@@ -173,6 +173,7 @@ def triplet_loss_function(
 
     # Compute triplet loss with proper batching (element-wise maximum)
     triplet_loss = torch.clamp(
-        relevant_distance - irrelevant_distance + margin, min=0)
+        relevant_distance - irrelevant_distance + margin, min=0
+    )
 
     return triplet_loss.mean()
