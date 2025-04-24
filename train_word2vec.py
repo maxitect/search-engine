@@ -47,6 +47,8 @@ def preprocess(text: str, min_count=10) -> list[str]:
     words = [w for w in words if len(w) > 1]  # Remove single characters
     words = [w for w in words if not w.isdigit()]  # Remove numbers
     words = [w for w in words if not any(c.isdigit() for c in w)]  # Remove words with numbers
+    words = [w for w in words if not w.startswith('http')]  # Remove URLs
+    words = [w for w in words if not w.startswith('www')]  # Remove URLs
     
     word_counts = collections.Counter(words)
     
@@ -137,9 +139,9 @@ def train():
         "dataset": "text8+MS-MARCO-full",
         "embedding_dim": 300,
         "window_size": 5,
-        "batch_size": 4096,  # Increased batch size for full dataset
+        "batch_size": 4096,
         "test_size": 0.1,
-        "min_count": 10,
+        "min_count": 15,  # Increased minimum word count
         "initial_lr": 0.01,
         "min_lr": 0.0001
     })
@@ -190,12 +192,12 @@ def train():
     model = CBOW(len(vocab), embedding_dim=300).to(device)
     optimizer = optim.Adam(model.parameters(), lr=0.01)
     
-    # Add learning rate scheduler
+    # Add learning rate scheduler with more aggressive reduction
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(
         optimizer, 
         mode='min',
         factor=0.5,
-        patience=2,
+        patience=1,  # Reduced patience
         verbose=True,
         min_lr=0.0001
     )
@@ -203,8 +205,8 @@ def train():
     criterion = nn.CrossEntropyLoss()
     
     # 5. Training loop with progress bar
-    batch_size = 4096  # Increased batch size
-    num_epochs = 5
+    batch_size = 4096
+    num_epochs = 5  # Increased number of epochs
     
     for epoch in range(num_epochs):
         model.train()
