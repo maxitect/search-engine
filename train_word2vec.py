@@ -49,6 +49,9 @@ def preprocess(text: str, min_count=10) -> list[str]:
     words = [w for w in words if not any(c.isdigit() for c in w)]  # Remove words with numbers
     words = [w for w in words if not w.startswith('http')]  # Remove URLs
     words = [w for w in words if not w.startswith('www')]  # Remove URLs
+    words = [w for w in words if not w.endswith('ing')]  # Remove gerunds
+    words = [w for w in words if not w.endswith('ed')]  # Remove past tense
+    words = [w for w in words if not w.endswith('ly')]  # Remove adverbs
     
     word_counts = collections.Counter(words)
     
@@ -138,10 +141,10 @@ def train():
         "architecture": "CBOW",
         "dataset": "text8+MS-MARCO-full",
         "embedding_dim": 300,
-        "window_size": 5,
-        "batch_size": 4096,
+        "window_size": 8,
+        "batch_size": 16384,  # Increased batch size for RTX 4090
         "test_size": 0.1,
-        "min_count": 15,  # Increased minimum word count
+        "min_count": 15,
         "initial_lr": 0.01,
         "min_lr": 0.0001
     })
@@ -166,7 +169,7 @@ def train():
     
     # 3. Prepare CBOW training data
     print("Preparing training data...")
-    window_size = 5
+    window_size = 8  # Increased window size
     train_data = []
     for i in tqdm(range(window_size, len(words)-window_size), desc="Creating training pairs"):
         context = words[i-window_size:i] + words[i+1:i+window_size+1]
@@ -205,8 +208,8 @@ def train():
     criterion = nn.CrossEntropyLoss()
     
     # 5. Training loop with progress bar
-    batch_size = 4096
-    num_epochs = 5  # Increased number of epochs
+    batch_size = 16384  # Increased batch size for RTX 4090
+    num_epochs = 5
     
     for epoch in range(num_epochs):
         model.train()
