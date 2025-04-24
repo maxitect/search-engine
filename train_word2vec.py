@@ -169,7 +169,7 @@ def train():
     wandb.init(project="word2vec-cbow-improved", config={
         "embedding_dim": 300,
         "window_size": 8,
-        "batch_size": 65536,
+        "batch_size": 8192,
         "min_count": 10,
         "initial_lr": 0.025,
         "min_lr": 0.0001,
@@ -180,6 +180,10 @@ def train():
     
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
+    
+    # Set memory optimization settings
+    torch.backends.cudnn.benchmark = True
+    torch.backends.cudnn.deterministic = False
     
     # Load and preprocess data
     print("Loading and preprocessing data...")
@@ -228,7 +232,7 @@ def train():
         T_max=wandb.config.epochs,
         eta_min=wandb.config.min_lr
     )
-    scaler = GradScaler()
+    scaler = torch.amp.GradScaler('cuda')
     
     # Test words and analogies
     test_words = ["computer", "technology", "data", "learning", "system"]
@@ -253,7 +257,7 @@ def train():
             
             optimizer.zero_grad()
             
-            with autocast():
+            with torch.amp.autocast('cuda'):
                 loss = model(context, target)
             
             scaler.scale(loss).backward()
@@ -261,6 +265,10 @@ def train():
             scaler.update()
             
             total_loss += loss.item()
+            
+            # Clear cache periodically
+            if (len(dataloader) * epoch + len(dataloader)) % 100 == 0:
+                torch.cuda.empty_cache()
         
         scheduler.step()
         
@@ -297,6 +305,9 @@ def train():
         print(f"Analogy accuracy: {analogy_acc*100:.1f}% (skipped {skipped})")
         for word, similar in similarity_results.items():
             print(f"Similar to '{word}': {similar}")
+        
+        # Clear cache after each epoch
+        torch.cuda.empty_cache()
     
     # Save final embeddings
     final_embeddings = model.get_embeddings().cpu().numpy()
