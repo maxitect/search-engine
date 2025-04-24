@@ -19,7 +19,9 @@ class Word2Vec(nn.Module):
         
         # Use sparse embeddings to save memory
         self.embeddings = nn.Embedding(vocab_size, embedding_dim, sparse=True)
-        self.linear = nn.Linear(embedding_dim, vocab_size)
+        
+        # Use a smaller linear layer with bias
+        self.linear = nn.Linear(embedding_dim, vocab_size, bias=True)
         
         # Initialize weights with smaller values
         self.init_weights()
