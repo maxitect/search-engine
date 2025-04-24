@@ -39,7 +39,7 @@ class Config:
     # Model parameters
     embedding_dim = 300
     learning_rate = 0.001
-    batch_size = 2048
+    batch_size = 1024
     epochs = 5
     
     # Training optimizations
