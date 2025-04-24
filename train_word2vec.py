@@ -110,27 +110,59 @@ def combine_datasets():
     return tokens, word2idx, idx2word
 
 class CBOW(nn.Module):
-    def __init__(self, vocab_size, embedding_dim=100):
+    def __init__(self, vocab_size, embedding_dim=50):
         super().__init__()
-        self.embeddings = nn.Embedding(vocab_size, embedding_dim)
+        self.vocab_size = vocab_size
+        self.embedding_dim = embedding_dim
+        
+        # Split vocabulary into chunks for memory efficiency
+        self.chunk_size = 10000  # Process 10k words at a time
+        self.num_chunks = (vocab_size + self.chunk_size - 1) // self.chunk_size
+        
+        # Create embedding chunks
+        self.embeddings = nn.ModuleList([
+            nn.Embedding(min(self.chunk_size, vocab_size - i * self.chunk_size), embedding_dim)
+            for i in range(self.num_chunks)
+        ])
+        
         self.linear = nn.Linear(embedding_dim, vocab_size)
         
         # Initialize weights with smaller values
-        self.embeddings.weight.data.uniform_(-0.1 / embedding_dim, 0.1 / embedding_dim)
+        for emb in self.embeddings:
+            emb.weight.data.uniform_(-0.1 / embedding_dim, 0.1 / embedding_dim)
         self.linear.weight.data.uniform_(-0.1 / embedding_dim, 0.1 / embedding_dim)
         self.linear.bias.data.zero_()
+    
+    def get_embedding(self, indices):
+        # Get embeddings from appropriate chunk
+        embeddings = []
+        for i in range(self.num_chunks):
+            mask = (indices >= i * self.chunk_size) & (indices < (i + 1) * self.chunk_size)
+            if mask.any():
+                chunk_indices = indices[mask] - i * self.chunk_size
+                chunk_emb = self.embeddings[i](chunk_indices)
+                embeddings.append((mask, chunk_emb))
         
+        # Combine embeddings
+        if not embeddings:
+            return torch.zeros(len(indices), self.embedding_dim, device=indices.device)
+        
+        result = torch.zeros(len(indices), self.embedding_dim, device=indices.device)
+        for mask, emb in embeddings:
+            result[mask] = emb
+        return result
+    
     def forward(self, context):
-        # Use gradient checkpointing for memory efficiency
         if self.training:
             return torch.utils.checkpoint.checkpoint(self._forward, context)
         return self._forward(context)
-        
+    
     def _forward(self, context):
-        # context shape: (batch_size, window_size*2)
-        embeds = self.embeddings(context)  # (batch_size, window_size*2, embedding_dim)
-        embeds = embeds.mean(dim=1)        # (batch_size, embedding_dim)
-        return self.linear(embeds)         # (batch_size, vocab_size)
+        # Get embeddings for context
+        embeds = self.get_embedding(context)
+        embeds = embeds.view(-1, context.size(1), self.embedding_dim)
+        embeds = embeds.mean(dim=1)
+        return self.linear(embeds)
 
 def get_similar_words(model, word, word2idx, idx2word, top_k=5):
     """Get similar words using cosine similarity"""
@@ -162,12 +194,12 @@ def train():
     wandb.init(project="word2vec-cbow", config={
         "architecture": "CBOW",
         "dataset": "text8+MS-MARCO",
-        "embedding_dim": 50,  # Further reduced from 100
+        "embedding_dim": 25,  # Further reduced from 50
         "window_size": 5,
-        "batch_size": 256,    # Further reduced from 512
+        "batch_size": 128,    # Further reduced from 256
         "learning_rate": 0.001,
         "epochs": 5,
-        "gradient_accumulation_steps": 32  # Increased from 16
+        "gradient_accumulation_steps": 64  # Increased from 32
     })
     
     # Set device
@@ -189,7 +221,7 @@ def train():
     train_data = []
     
     # Process in chunks to manage memory
-    chunk_size = 100000  # Further reduced from 250000
+    chunk_size = 50000  # Further reduced from 100000
     for i in tqdm(range(0, len(tokens), chunk_size), desc="Creating training pairs"):
         chunk_end = min(i + chunk_size, len(tokens))
         chunk = tokens[i:chunk_end]
@@ -232,9 +264,10 @@ def train():
     
     # Move model to device with memory optimization
     if device.type == 'cuda':
-        # Move embeddings first
-        model.embeddings = model.embeddings.to(device)
-        torch.cuda.empty_cache()
+        # Move embeddings chunk by chunk
+        for i, emb in enumerate(model.embeddings):
+            model.embeddings[i] = emb.to(device)
+            torch.cuda.empty_cache()
         
         # Move linear layer
         model.linear = model.linear.to(device)
@@ -321,7 +354,7 @@ def train():
                 del outputs
                 
                 # Clear CUDA cache more frequently
-                if device.type == 'cuda' and i % 10 == 0:
+                if device.type == 'cuda' and i % 5 == 0:
                     torch.cuda.empty_cache()
         
         # Evaluation
