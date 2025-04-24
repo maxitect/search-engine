@@ -169,7 +169,8 @@ def train():
     wandb.init(project="word2vec-cbow-improved", config={
         "embedding_dim": 300,
         "window_size": 8,
-        "batch_size": 8192,
+        "batch_size": 2048,
+        "gradient_accumulation_steps": 4,
         "min_count": 10,
         "initial_lr": 0.025,
         "min_lr": 0.0001,
@@ -184,6 +185,7 @@ def train():
     # Set memory optimization settings
     torch.backends.cudnn.benchmark = True
     torch.backends.cudnn.deterministic = False
+    torch.cuda.empty_cache()
     
     # Load and preprocess data
     print("Loading and preprocessing data...")
@@ -249,46 +251,58 @@ def train():
         model.train()
         total_loss = 0
         start_time = time.time()
+        optimizer.zero_grad()
         
-        for context, target in tqdm(dataloader, desc=f"Epoch {epoch+1}"):
+        for batch_idx, (context, target) in enumerate(tqdm(dataloader, desc=f"Epoch {epoch+1}")):
             # Move tensors to device
             context = context.to(device)
             target = target.to(device)
             
-            optimizer.zero_grad()
-            
             with torch.amp.autocast('cuda'):
                 loss = model(context, target)
+                # Scale loss for gradient accumulation
+                loss = loss / wandb.config.gradient_accumulation_steps
             
             scaler.scale(loss).backward()
+            
+            # Step optimizer only after accumulating gradients
+            if (batch_idx + 1) % wandb.config.gradient_accumulation_steps == 0:
+                scaler.step(optimizer)
+                scaler.update()
+                optimizer.zero_grad()
+                
+                # Clear cache periodically
+                if batch_idx % 50 == 0:
+                    torch.cuda.empty_cache()
+            
+            total_loss += loss.item() * wandb.config.gradient_accumulation_steps
+        
+        # Handle remaining gradients
+        if (batch_idx + 1) % wandb.config.gradient_accumulation_steps != 0:
             scaler.step(optimizer)
             scaler.update()
-            
-            total_loss += loss.item()
-            
-            # Clear cache periodically
-            if (len(dataloader) * epoch + len(dataloader)) % 100 == 0:
-                torch.cuda.empty_cache()
+            optimizer.zero_grad()
         
         scheduler.step()
         
         # Evaluation
         model.eval()
-        embeddings = model.get_embeddings()
-        
-        # Calculate similarities
-        similarity_results = {}
-        for word in test_words:
-            if word in word2idx:
-                similar = get_similar_words(embeddings, word, word2idx, idx2word)
-                similarity_results[word] = ", ".join(
-                    f"{w} ({s:.3f})" for w, s in similar[:5]
-                )
-        
-        # Evaluate analogies
-        analogy_acc, skipped = evaluate_analogies(
-            embeddings, word2idx, idx2word, analogy_tests
-        )
+        with torch.no_grad():
+            embeddings = model.get_embeddings()
+            
+            # Calculate similarities
+            similarity_results = {}
+            for word in test_words:
+                if word in word2idx:
+                    similar = get_similar_words(embeddings, word, word2idx, idx2word)
+                    similarity_results[word] = ", ".join(
+                        f"{w} ({s:.3f})" for w, s in similar[:5]
+                    )
+            
+            # Evaluate analogies
+            analogy_acc, skipped = evaluate_analogies(
+                embeddings, word2idx, idx2word, analogy_tests
+            )
         
         # Log metrics
         wandb.log({
