@@ -31,6 +31,13 @@ class CustomMSMARCODataset(Dataset):
             # Load embeddings
             with open('/root/search-engine/models/text8_embeddings/inherited_bert_embeddings.pkl', 'rb') as f:
                 self.embeddings = pickle.load(f)
+            # Load vocabulary mapping
+            with open('/root/search-engine/models/text8_embeddings/inherited_bert_vocab.json', 'r') as f:
+                vocab_list = json.load(f)
+                # Convert list to dictionary with word as key and index as value
+                self.vocab = {word: idx for idx, word in enumerate(vocab_list)}
+                # Create reverse vocabulary mapping
+                self.reverse_vocab = {str(idx): word for idx, word in enumerate(vocab_list)}
         else:
             self.word2vec_model = Word2Vec.load('/root/search-engine/models/text8_embeddings/word2vec_model')
             self.vocab = {word: idx for idx, word in enumerate(self.word2vec_model.wv.index_to_key)}
@@ -121,8 +128,11 @@ class CustomMSMARCODataset(Dataset):
     def decode_tokens(self, tokens, is_query=True):
         """Decode tokens back to text using the appropriate tokenizer."""
         if self.use_bert:
-            # Use BERT's tokenizer to decode
-            return self.tokenizer.decode(tokens, skip_special_tokens=True, clean_up_tokenization_spaces=True)
+            # Remove padding tokens (0) and special tokens (101, 102)
+            tokens = [t for t in tokens if t not in [0, 101, 102]]
+            # Convert tokens to words using the vocabulary mapping
+            words = [self.reverse_vocab.get(str(t), 'UNK') for t in tokens]
+            return ' '.join(words)
         else:
             # For Word2Vec, use the vocabulary mapping
             if isinstance(tokens, torch.Tensor):
@@ -385,35 +395,67 @@ def print_top_10_passages(model, dataset, word_vectors):
     # Get the device the model is on
     device = next(model.parameters()).device
     
-    # Get a random batch from the validation dataset
-    random_idx = random.randint(0, len(dataset) - 1)
-    item = dataset[random_idx]
+    # Example queries
+    queries = [
+        "What is a color?",
+        "How does a neural network work?",
+        "What are the applications of artificial intelligence?"
+    ]
     
-    # Get the query and its text
-    query = item['query'].to(device)  # Move to same device as model
-    query_text = tokens_to_text(query, dataset, is_query=True)
+    # Create a mapping from index to document text
+    doc_id_to_text = {}
+    for idx in range(len(dataset)):
+        item = dataset.get_text(idx)  # Use get_text method to get original text
+        doc_id_to_text[f"doc_{idx}"] = item['passage_text']
     
-    print("\nQuery:")
-    print(f"Token IDs: {query.tolist()}")
-    print(f"Converted text: {query_text}")
-    
-    # Get all passages and compute similarities
-    passage = item['passage'].to(device)  # Move to same device as model
-    passage_text = tokens_to_text(passage, dataset, is_query=False)
-    
-    # Compute similarities
-    with torch.no_grad():
-        query_embedding = model.query_tower(query.unsqueeze(0))
-        passage_embedding = model.passage_tower(passage.unsqueeze(0))
-        similarity = torch.nn.functional.cosine_similarity(
-            query_embedding, passage_embedding, dim=1
-        ).item()
-    
-    print("\nMost similar passage:")
-    print(f"Similarity: {similarity:.4f}")
-    print(f"Passage token IDs: {passage.tolist()}")
-    print(f"Passage text: {passage_text}")
-    print(f"Correct match: {'Yes' if item['is_selected'].item() == 1 else 'No'}")
+    # Perform searches
+    print("\nPerforming searches...")
+    for query in queries:
+        print(f"\nQuery: {query}")
+        
+        # Tokenize the query
+        if dataset.use_bert:
+            query_tokens = dataset.tokenizer.encode(
+                query,
+                add_special_tokens=True,
+                max_length=dataset.max_query_len,
+                padding='max_length',
+                truncation=True,
+                return_tensors='pt'
+            ).squeeze(0).to(device)
+        else:
+            query_words = query.lower().split()
+            query_tokens = [dataset.vocab.get(word, 0) for word in query_words]
+            query_tokens = query_tokens[:dataset.max_query_len] + [0] * (dataset.max_query_len - len(query_tokens))
+            query_tokens = torch.LongTensor(query_tokens).to(device)
+        
+        # Get query embedding
+        with torch.no_grad():
+            query_embedding = model.query_tower(query_tokens.unsqueeze(0))
+            
+            # Compute similarities with all passages
+            similarities = []
+            for idx in range(len(dataset)):
+                item = dataset[idx]
+                passage_tokens = item['passage'].to(device)
+                passage_embedding = model.passage_tower(passage_tokens.unsqueeze(0))
+                similarity = torch.nn.functional.cosine_similarity(
+                    query_embedding, passage_embedding, dim=1
+                ).item()
+                similarities.append((f"doc_{idx}", similarity))
+            
+            # Sort by similarity and get top 5
+            similarities.sort(key=lambda x: x[1], reverse=True)
+            top_results = similarities[:5]
+            
+            print("\nTop 5 results:")
+            for doc_id, score in top_results:
+                print(f"\nDocument ID: {doc_id}")
+                print(f"Similarity Score: {score:.4f}")
+                print("Content:")
+                print("-" * 80)
+                print(doc_id_to_text[doc_id])
+                print("-" * 80)
 
 def train_model(config):
     # Initialize wandb
