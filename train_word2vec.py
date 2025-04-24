@@ -19,7 +19,7 @@ class Config:
     
     # Model
     embedding_dim = 300
-    window_size = 5
+    window_size = 3
     negative_samples = 10
     
     # Training
