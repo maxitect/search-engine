@@ -34,30 +34,29 @@ wandb.init(project="word2vec-training", name="cbow-memory-optimized")
 class Config:
     # Data parameters
     window_size = 5
-    min_word_freq = 20  # Increased to reduce vocabulary
-    max_vocab_size = 25000  # Reduced from 50000
+    min_word_freq = 30  # Increased to reduce vocabulary
+    max_vocab_size = 10000  # Reduced from 25000
     
     # Model parameters
-    embedding_dim = 25  # Reduced from 50
+    embedding_dim = 16  # Reduced from 25
     learning_rate = 0.001
-    initial_batch_size = 256  # Reduced from 512
+    initial_batch_size = 128  # Reduced from 256
     epochs = 5
     
     # Training optimizations
     use_sparse = True
     use_mixed_precision = True
-    gradient_accumulation_steps = 64  # Increased from 32
-    chunk_size = 250000  # Reduced from 500000
-    memory_safety_factor = 0.7  # Safety factor for memory usage
+    gradient_accumulation_steps = 128  # Increased from 64
+    chunk_size = 100000  # Reduced from 250000
+    memory_safety_factor = 0.5  # More conservative safety factor
     
     # Paths
     text8_path = "data/text8"
-    msmarco_path = "data/msmarco-v1.1"
     output_dir = "data/word2vec"
     
     # Evaluation
     test_words = ["computer", "technology", "data", "learning", "system"]
-    eval_interval = 2500
+    eval_interval = 1000
     top_k = 10
 
 # Create output directory if it doesn't exist
@@ -222,26 +221,30 @@ def get_gpu_memory():
         return torch.cuda.get_device_properties(0).total_memory / (1024 * 1024)
     return 0
 
-def calculate_dynamic_batch_size(model, device, safety_factor=0.7):
+def calculate_dynamic_batch_size(model, device, safety_factor=0.5):
     """Calculate optimal batch size based on available memory"""
     total_memory = get_gpu_memory()
     if total_memory == 0:
         return Config.initial_batch_size
     
-    # Estimate memory per sample
+    # Estimate memory per sample (more conservative estimate)
     sample_size = (Config.embedding_dim * Config.window_size * 4)  # 4 bytes per float
-    max_batch_size = int((total_memory * safety_factor) / sample_size)
+    # Add overhead for model parameters and gradients
+    overhead = (Config.embedding_dim * Config.max_vocab_size * 4) / 1024  # KB
+    available_memory = (total_memory * safety_factor) - overhead
+    
+    max_batch_size = int(available_memory / sample_size)
     
     # Ensure batch size is a power of 2 and within reasonable limits
     batch_size = min(2 ** int(np.log2(max_batch_size)), Config.initial_batch_size)
-    return max(32, batch_size)  # Minimum batch size of 32
+    return max(16, batch_size)  # Minimum batch size of 16
 
 class MemoryEfficientCBOWModel(nn.Module):
     def __init__(self, vocab_size, embedding_dim, use_sparse=True):
         super(MemoryEfficientCBOWModel, self).__init__()
         
         # Split vocabulary into smaller chunks
-        self.chunk_size = 5000  # Reduced from 10000
+        self.chunk_size = 2000  # Reduced from 5000
         self.num_chunks = (vocab_size + self.chunk_size - 1) // self.chunk_size
         
         # Create embedding chunks
@@ -347,7 +350,7 @@ def train_on_chunk(model, data_chunk, optimizer, criterion, scaler, device,
         progress_bar.set_description(f"Loss: {total_loss/total_batches:.4f}")
         
         # Clear memory periodically
-        if batch_idx % 25 == 0:  # More frequent cleanup
+        if batch_idx % 10 == 0:  # More frequent cleanup
             torch.cuda.empty_cache()
             gc.collect()
     
@@ -398,6 +401,10 @@ def train_word2vec():
     # Free memory before creating model
     gc.collect()
     torch.cuda.empty_cache()
+    
+    # Check available memory
+    total_memory = get_gpu_memory()
+    print(f"Total GPU memory: {total_memory:.2f} MB")
     
     # Initialize model
     model = MemoryEfficientCBOWModel(
@@ -495,7 +502,7 @@ def train_word2vec():
     embeddings = model.embeddings.weight.data.cpu().numpy()
     
     # Save in chunks
-    chunk_size = 5000  # Reduced from 10000
+    chunk_size = 2000  # Reduced from 5000
     for i in range(0, len(word_to_idx), chunk_size):
         chunk_end = min(i + chunk_size, len(word_to_idx))
         chunk_embeddings = embeddings[i:chunk_end]
