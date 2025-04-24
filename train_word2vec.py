@@ -19,19 +19,25 @@ class Config:
     output_dir = os.path.join(data_dir, "word2vec")
     
     # Vocabulary
-    vocab_min_count = 50  # Only keep words appearing ≥50 times
+    vocab_min_count = 100  # Increased from 50 to reduce vocabulary size
     
     # Model architecture
-    embedding_dim = 200   # Reduced from 300 to save memory
-    window_size = 5       # Context window size
-    negative_samples = 5  # Number of negative samples
+    embedding_dim = 100    # Reduced from 200 to save memory
+    window_size = 5        # Context window size
+    negative_samples = 5   # Number of negative samples
     
     # Training
-    batch_size = 4096     # Reduced from 65536 to prevent OOM
+    batch_size = 512       # Significantly reduced to prevent OOM
+    grad_accumulation = 8  # Accumulate gradients to simulate larger batch
     initial_lr = 0.025
     min_lr = 0.0001
     epochs = 10
+    use_mixed_precision = True  # Enable mixed precision training
     device = "cuda" if torch.cuda.is_available() else "cpu"
+    
+    # Data processing
+    max_words = 20000000   # Limit number of words to process (set to None to use all)
+    use_msmarco = True     # Set to False to train only on text8 data
 
 def load_text8():
     """Load and preprocess the text8 dataset"""
@@ -42,12 +48,20 @@ def load_text8():
 
 def load_msmarco():
     """Load and preprocess MS-MARCO dataset"""
+    if not Config.use_msmarco:
+        print("Skipping MS-MARCO dataset")
+        return []
+        
     print("Loading MS-MARCO dataset...")
     dataset = load_dataset("ms_marco", "v1.1", split="train")
     words = []
     for example in tqdm(dataset, desc="Processing MS-MARCO"):
         for passage in example['passages']['passage_text']:
             words.extend(preprocess(passage))
+            # Check if we've reached the word limit
+            if Config.max_words and len(words) >= Config.max_words // 2:
+                print(f"Reached word limit for MS-MARCO: {len(words):,}")
+                return words
     return words
 
 def preprocess(text):
@@ -167,6 +181,10 @@ def train():
     # Load and combine datasets
     print("Loading and preprocessing data...")
     text8_words = load_text8()
+    if Config.max_words:
+        text8_words = text8_words[:Config.max_words // 2]
+        print(f"Limited text8 words to {len(text8_words):,}")
+    
     msmarco_words = load_msmarco()
     combined_words = text8_words + msmarco_words
     
@@ -179,59 +197,108 @@ def train():
     vocab, word2idx, idx2word = build_vocab(combined_words, Config.vocab_min_count)
     print(f"\nVocabulary size: {len(vocab):,} (min count={Config.vocab_min_count})")
     
+    # Free up memory
+    del combined_words
+    
     # Create dataset and dataloader
-    dataset = Word2VecDataset(combined_words, word2idx, Config.window_size)
+    dataset = Word2VecDataset(text8_words + msmarco_words, word2idx, Config.window_size)
     dataloader = DataLoader(
         dataset,
         batch_size=Config.batch_size,
         shuffle=True,
-        num_workers=4,
+        num_workers=2,  # Reduced from 4
         pin_memory=True
     )
     
+    # Free up more memory
+    del text8_words
+    del msmarco_words
+    
     # Initialize model
     model = CBOW(len(vocab), Config.embedding_dim, Config.negative_samples)
-    model = model.to(Config.device)
+    try:
+        model = model.to(Config.device)
+    except RuntimeError:
+        print("Failed to move model to GPU, falling back to CPU")
+        Config.device = "cpu"
+        model = model.to(Config.device)
+    
     optimizer = optim.Adam(model.parameters(), lr=Config.initial_lr)
-    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, Config.epochs, Config.min_lr)
+    scheduler = optim.lr_scheduler.CosineAnnealingLR(
+        optimizer, 
+        T_max=Config.epochs * len(dataloader) // Config.grad_accumulation, 
+        eta_min=Config.min_lr
+    )
+    
+    # Set up mixed precision training if enabled and on GPU
+    scaler = torch.cuda.amp.GradScaler() if Config.use_mixed_precision and Config.device == "cuda" else None
     
     # Training loop
     best_loss = float('inf')
-    print("\nStarting training...")
+    print(f"\nStarting training on {Config.device.upper()}...")
+    print(f"Using mixed precision: {Config.use_mixed_precision and Config.device == 'cuda'}")
+    print(f"Gradient accumulation steps: {Config.grad_accumulation}")
     
     for epoch in range(Config.epochs):
         model.train()
         total_loss = 0
+        optimizer.zero_grad(set_to_none=True)
         
-        for context, target in tqdm(dataloader, desc=f"Epoch {epoch+1}/{Config.epochs}"):
+        # Use tqdm for progress tracking
+        progress_bar = tqdm(dataloader, desc=f"Epoch {epoch+1}/{Config.epochs}")
+        
+        for i, (context, target) in enumerate(progress_bar):
             context = context.to(Config.device, non_blocking=True)
             target = target.to(Config.device, non_blocking=True)
             
-            optimizer.zero_grad(set_to_none=True)
-            loss = model(context, target)
-            loss.backward()
-            optimizer.step()
+            # Mixed precision forward pass
+            if scaler:
+                with torch.cuda.amp.autocast():
+                    loss = model(context, target) / Config.grad_accumulation
+                scaler.scale(loss).backward()
+            else:
+                loss = model(context, target) / Config.grad_accumulation
+                loss.backward()
             
-            total_loss += loss.item()
+            # Update metrics
+            total_loss += loss.item() * Config.grad_accumulation
+            
+            # Update parameters after accumulating gradients
+            if (i + 1) % Config.grad_accumulation == 0 or (i + 1) == len(dataloader):
+                if scaler:
+                    scaler.step(optimizer)
+                    scaler.update()
+                else:
+                    optimizer.step()
+                    
+                optimizer.zero_grad(set_to_none=True)
+                scheduler.step()
+                
+                # Update progress bar
+                progress_bar.set_postfix({"loss": total_loss / (i + 1), "lr": scheduler.get_last_lr()[0]})
         
         avg_loss = total_loss / len(dataloader)
-        scheduler.step()
         
         # Save best model
         if avg_loss < best_loss:
             best_loss = avg_loss
+            
+            # Save model to CPU to avoid GPU memory issues
+            model_cpu = {k: v.cpu() for k, v in model.state_dict().items()}
+            
             torch.save({
-                'model_state_dict': model.state_dict(),
+                'model_state_dict': model_cpu,
                 'vocab': vocab,
                 'word2idx': word2idx,
                 'idx2word': idx2word,
-                'config': Config.__dict__
+                'config': {k: v for k, v in Config.__dict__.items() if not k.startswith('__')}
             }, os.path.join(Config.output_dir, "best_model.pt"))
             
-            # Save embeddings
+            # Save embeddings in chunks to avoid memory issues
             embeddings = model.get_embeddings().cpu().detach().numpy()
             np.save(os.path.join(Config.output_dir, "embeddings.npy"), embeddings)
-        
+            del embeddings
+            
         print(f"Epoch {epoch+1}: Loss = {avg_loss:.4f}, LR = {scheduler.get_last_lr()[0]:.6f}")
 
 if __name__ == "__main__":
