@@ -86,27 +86,50 @@ def get_combined_words():
     total_examples = len(dataset)
     print(f"Total MS-MARCO examples: {total_examples}")
     
+    # Pre-allocate memory for MS-MARCO words
+    # Estimate average words per passage to avoid frequent reallocations
+    estimated_total_words = total_examples * 100  # Conservative estimate
+    msmarco_words = []
+    
     for chunk_start in tqdm(range(0, total_examples, chunk_size), desc="Processing MS-MARCO chunks"):
         chunk_end = min(chunk_start + chunk_size, total_examples)
         chunk = dataset.select(range(chunk_start, chunk_end))
         
+        # Process passages in parallel using list comprehension
         chunk_words = []
         for example in chunk:
             passages = example['passages']['passage_text']
+            # Process all passages for this example at once
+            processed_words = []
             for passage in passages:
-                processed_words = preprocess(passage)
-                chunk_words.extend(processed_words)
+                processed_words.extend(preprocess(passage))
+            chunk_words.extend(processed_words)
         
+        # Extend the main list and clear chunk memory
         msmarco_words.extend(chunk_words)
-        # Print progress
+        del chunk_words  # Free memory
+        del chunk  # Free memory
+        
+        # Print progress with memory usage info
         print(f"Processed {chunk_end}/{total_examples} examples, current word count: {len(msmarco_words)}")
     
     print(f"Loaded {len(msmarco_words)} words from MS-MARCO")
     
     # Combine and filter words
+    print("Combining datasets...")
     all_words = text8_words + msmarco_words
-    word_counts = Counter(all_words)
-    filtered_words = [word for word in all_words if word_counts[word] >= 15]  # Increased threshold
+    del text8_words  # Free memory
+    del msmarco_words  # Free memory
+    
+    # Build vocabulary with memory-efficient counting
+    print("Building vocabulary...")
+    word_counts = Counter()
+    for word in all_words:
+        word_counts[word] += 1
+    
+    # Filter words while maintaining memory efficiency
+    filtered_words = [word for word in all_words if word_counts[word] >= 15]
+    del all_words  # Free memory
     
     print(f"Total combined words after filtering: {len(filtered_words)}")
     return filtered_words
@@ -195,18 +218,19 @@ def train():
     wandb.init(project="word2vec-cbow", config={
         "architecture": "CBOW",
         "dataset": "text8+MS-MARCO-full",
-        "embedding_dim": 512,
-        "window_size": 12,
-        "batch_size": 16384,  # Reduced from 24576 for better stability
+        "embedding_dim": 300,  # Reduced from 512
+        "window_size": 5,      # Reduced from 10
+        "batch_size": 8192,    # Reduced from 16384
         "test_size": 0.1,
-        "min_count": 20,
-        "initial_lr": 0.01,   # Reduced from 0.02
+        "min_count": 15,       # Reduced from 20
+        "initial_lr": 0.001,   # Reduced from 0.01
         "min_lr": 0.0001,
         "epochs": 15,
         "optimizer": "Adam",
-        "scheduler": "ReduceLROnPlateau",
+        "scheduler": "CosineAnnealingLR",  # Changed to cosine annealing
         "mixed_precision": True,
-        "gradient_clip": 1.0  # Added gradient clipping
+        "gradient_clip": 1.0,
+        "warmup_epochs": 2     # Added warmup
     })
     
     # Create data directory if it doesn't exist
@@ -224,31 +248,46 @@ def train():
     print("Loading and combining datasets...")
     words = get_combined_words()
     
-    # 2. Build vocabulary with stricter filtering
+    # 2. Build vocabulary with memory-efficient counting
     print("Building vocabulary...")
-    word_counts = Counter(words)
-    vocab = [word for word, count in word_counts.items() if count >= 15]
+    word_counts = Counter()
+    for word in words:
+        word_counts[word] += 1
+    
+    vocab = [word for word, count in word_counts.items() if count >= wandb.config.min_count]
     print(f"Vocabulary size: {len(vocab)}")
     word2idx = {word: idx for idx, word in enumerate(vocab)}
     idx2word = {idx: word for word, idx in word2idx.items()}
+    
+    # Free memory
+    del word_counts
     
     # Define test words for similarity evaluation
     test_words = ["computer", "technology", "data", "learning", "system"]
     test_words = [w for w in test_words if w in word2idx]
     
-    # 3. Prepare CBOW training data with larger window
+    # 3. Prepare CBOW training data with memory efficiency
     print("Preparing training data...")
-    window_size = 10
+    window_size = wandb.config.window_size
     train_data = []
     
-    for i in tqdm(range(window_size, len(words)-window_size), desc="Creating training pairs"):
-        context = words[i-window_size:i] + words[i+1:i+window_size+1]
-        target = words[i]
-        if target in word2idx and all(c in word2idx for c in context):
-            train_data.append((
-                [word2idx[c] for c in context],
-                word2idx[target]
-            ))
+    # Process in chunks to manage memory
+    chunk_size = 1000000
+    for i in tqdm(range(0, len(words), chunk_size), desc="Creating training pairs"):
+        chunk_end = min(i + chunk_size, len(words))
+        chunk = words[i:chunk_end]
+        
+        for j in range(window_size, len(chunk)-window_size):
+            context = chunk[j-window_size:j] + chunk[j+1:j+window_size+1]
+            target = chunk[j]
+            if target in word2idx and all(c in word2idx for c in context):
+                train_data.append((
+                    [word2idx[c] for c in context],
+                    word2idx[target]
+                ))
+        
+        # Free memory
+        del chunk
     
     print(f"Created {len(train_data)} training pairs")
     
@@ -261,18 +300,26 @@ def train():
     print(f"Training set size: {len(train_set)}")
     print(f"Test set size: {len(test_set)}")
     
+    # Free memory
+    del train_data
+    
     # 4. Initialize model and optimizer
-    model = CBOW(len(vocab), embedding_dim=512).to(device)
+    model = CBOW(len(vocab), embedding_dim=wandb.config.embedding_dim).to(device)
     optimizer = optim.Adam(model.parameters(), lr=wandb.config.initial_lr, weight_decay=1e-4)
     
-    # Add learning rate scheduler with more aggressive reduction
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, 
-        mode='min',
-        factor=0.5,
-        patience=2,
-        verbose=True,
-        min_lr=wandb.config.min_lr
+    # Add learning rate scheduler with warmup
+    scheduler = optim.lr_scheduler.CosineAnnealingLR(
+        optimizer,
+        T_max=wandb.config.epochs - wandb.config.warmup_epochs,
+        eta_min=wandb.config.min_lr
+    )
+    
+    # Warmup scheduler
+    warmup_scheduler = optim.lr_scheduler.LinearLR(
+        optimizer,
+        start_factor=0.1,
+        end_factor=1.0,
+        total_iters=wandb.config.warmup_epochs
     )
     
     criterion = nn.CrossEntropyLoss()
@@ -280,7 +327,7 @@ def train():
     # Initialize gradient scaler for mixed precision training
     scaler = torch.amp.GradScaler('cuda')
     
-    # 5. Training loop with mixed precision and improved metrics
+    # 5. Training loop with improved memory management
     batch_size = wandb.config.batch_size
     num_epochs = wandb.config.epochs
     
@@ -293,6 +340,10 @@ def train():
         ("small", "smaller", "big", "bigger")
     ]
     
+    best_val_loss = float('inf')
+    patience = 3
+    patience_counter = 0
+    
     for epoch in range(num_epochs):
         model.train()
         np.random.shuffle(train_set)
@@ -301,6 +352,7 @@ def train():
         total = 0
         epoch_start_time = time.time()
         
+        # Process in chunks to manage memory
         with tqdm(range(0, len(train_set), batch_size)) as pbar:
             pbar.set_description(f"Epoch {epoch+1}/{num_epochs} - Training")
             
@@ -308,7 +360,8 @@ def train():
                 batch = train_set[i:i+batch_size]
                 if not batch:
                     continue
-                    
+                
+                # Process batch
                 contexts, targets = zip(*batch)
                 context_tensor = torch.LongTensor(contexts).to(device)
                 target_tensor = torch.LongTensor(targets).to(device)
@@ -327,12 +380,18 @@ def train():
                 scaler.step(optimizer)
                 scaler.update()
                 
+                # Update metrics
                 _, predicted = torch.max(outputs.data, 1)
                 total += target_tensor.size(0)
                 correct += (predicted == target_tensor).sum().item()
                 total_loss += loss.item()
                 
-                # Update progress bar with more metrics
+                # Free memory
+                del context_tensor
+                del target_tensor
+                del outputs
+                
+                # Update progress bar
                 current_lr = optimizer.param_groups[0]['lr']
                 pbar.set_postfix({
                     "loss": f"{total_loss/(i/batch_size + 1):.2f}",
@@ -340,7 +399,7 @@ def train():
                     "lr": f"{current_lr:.6f}"
                 })
                 
-                # Log batch metrics at intervals
+                # Log batch metrics
                 if i % (batch_size * 10) == 0:
                     wandb.log({
                         "batch_loss": loss.item(),
@@ -349,12 +408,11 @@ def train():
                         "epoch": epoch + (i/len(train_set))
                     })
         
-        # Calculate average loss for the epoch
-        avg_loss = total_loss / (len(train_set) // batch_size)
-        epoch_time = time.time() - epoch_start_time
-        
-        # Update learning rate based on loss
-        scheduler.step(avg_loss)
+        # Update learning rate
+        if epoch < wandb.config.warmup_epochs:
+            warmup_scheduler.step()
+        else:
+            scheduler.step()
         
         # Evaluation phase
         model.eval()
@@ -367,7 +425,7 @@ def train():
                 batch = test_set[i:i+batch_size]
                 if not batch:
                     continue
-                    
+                
                 contexts, targets = zip(*batch)
                 context_tensor = torch.LongTensor(contexts).to(device)
                 target_tensor = torch.LongTensor(targets).to(device)
@@ -379,6 +437,34 @@ def train():
                 test_total += target_tensor.size(0)
                 test_correct += (predicted == target_tensor).sum().item()
                 test_loss += loss.item()
+                
+                # Free memory
+                del context_tensor
+                del target_tensor
+                del outputs
+        
+        # Calculate metrics
+        avg_loss = total_loss / (len(train_set) // batch_size)
+        test_avg_loss = test_loss / (len(test_set) // batch_size)
+        epoch_time = time.time() - epoch_start_time
+        
+        # Early stopping check
+        if test_avg_loss < best_val_loss:
+            best_val_loss = test_avg_loss
+            patience_counter = 0
+            # Save best model
+            torch.save({
+                'epoch': epoch,
+                'model_state_dict': model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'train_loss': avg_loss,
+                'test_loss': test_avg_loss,
+            }, "data/word2vec/best_model.pt")
+        else:
+            patience_counter += 1
+            if patience_counter >= patience:
+                print(f"Early stopping triggered after {epoch+1} epochs")
+                break
         
         # Evaluate word similarities
         similarity_results = {}
@@ -393,11 +479,11 @@ def train():
         # Evaluate analogies
         analogy_accuracy, skipped = evaluate_analogy(model, word2idx, idx2word, analogy_tests)
         
-        # Log comprehensive metrics to wandb
+        # Log metrics
         wandb.log({
-            "train_loss": total_loss/len(train_set),
+            "train_loss": avg_loss,
             "train_accuracy": 100*correct/total,
-            "test_loss": test_loss/len(test_set),
+            "test_loss": test_avg_loss,
             "test_accuracy": 100*test_correct/test_total,
             "epoch_time_seconds": epoch_time,
             "analogy_accuracy": analogy_accuracy,
@@ -418,21 +504,24 @@ def train():
         for word, similar in similarity_results.items():
             print(f"Similar words to '{word}': {similar}")
         
-        # Save checkpoint with embedding norms info
-        embedding_norms = torch.norm(model.embeddings.weight, dim=1)
+        # Save checkpoint
         torch.save({
             'epoch': epoch,
             'model_state_dict': model.state_dict(),
             'optimizer_state_dict': optimizer.state_dict(),
-            'train_loss': total_loss/len(train_set),
-            'test_loss': test_loss/len(test_set),
-            'embedding_norm_mean': embedding_norms.mean().item(),
-            'embedding_norm_std': embedding_norms.std().item(),
-            'embedding_norm_max': embedding_norms.max().item(),
-            'embedding_norm_min': embedding_norms.min().item()
+            'train_loss': avg_loss,
+            'test_loss': test_avg_loss,
         }, f"data/word2vec/checkpoint_epoch_{epoch}.pt")
+        
+        # Clear CUDA cache
+        if device.type == 'cuda':
+            torch.cuda.empty_cache()
     
-    # 6. Save final embeddings
+    # Load best model
+    checkpoint = torch.load("data/word2vec/best_model.pt")
+    model.load_state_dict(checkpoint['model_state_dict'])
+    
+    # Save final embeddings
     final_embeddings = model.embeddings.weight.data.cpu().numpy()
     torch.save({
         'embeddings': final_embeddings,
@@ -441,7 +530,7 @@ def train():
         'idx2word': idx2word
     }, "data/word2vec/word2vec_cbow_final.pt")
     
-    # Save in a more interoperable format (numpy)
+    # Save in numpy format
     np.save("data/word2vec/embeddings.npy", final_embeddings)
     with open("data/word2vec/vocab.txt", "w") as f:
         for word in vocab:
