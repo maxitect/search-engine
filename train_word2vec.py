@@ -37,7 +37,7 @@ class Config:
     min_word_freq = 5
     
     # Model parameters
-    embedding_dim = 300
+    embedding_dim = 200
     learning_rate = 0.001
     batch_size = 1024
     epochs = 5
