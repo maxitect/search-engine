@@ -5,8 +5,10 @@ from tqdm import tqdm
 from engine.data.ms_marco import load_ms_marco
 from inference import setup_semantics_embedder
 
+CONFIG_OPTIONS = ['my_embeddings', 'gensim_embeddings', 'baseline']
 
-def create_db_chroma_embeddings(num_entries = None):
+
+def create_db_chroma_embeddings(num_entries=None):
     # Set up Chroma
     chroma_client = chromadb.PersistentClient()
     # Get Chroma embedding function
@@ -42,15 +44,13 @@ def create_db_chroma_embeddings(num_entries = None):
             ids=ids,
         )
 
-def create_db_my_embeddings(num_entries = None):
-    # config = 'my_embeddings'
-    config = 'gensim_embeddings'
 
+def create_db_my_embeddings(config, num_entries=None):
 
     semantics_embedder = setup_semantics_embedder(config)
     chroma_client = chromadb.PersistentClient()
     collection = chroma_client.get_or_create_collection(
-        name=f'train_docs_{config}',
+        name=f'train_docs_{config}2',
     )
 
     train_ds = load_ms_marco()['train']
@@ -74,5 +74,8 @@ def create_db_my_embeddings(num_entries = None):
 
 
 if __name__ == '__main__':
-    create_db_chroma_embeddings()
+    # create_db_chroma_embeddings()
+    # config = 'my_embeddings'
+    # config = 'gensim_embeddings'
     # create_db_my_embeddings(2000)
+    create_db_my_embeddings('baseline', 2000)

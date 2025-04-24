@@ -4,6 +4,11 @@ from engine.model import Encoder
 import torch
 from engine.utils import get_wandb_checkpoint_path, get_device
 from engine.text.gensim_w2v import GensimWord2Vec
+import logging
+
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+
 
 def setup_semantics_embedder(config: str):
     device = get_device()
@@ -14,9 +19,9 @@ def setup_semantics_embedder(config: str):
         D_out = 100
 
         query_encoder = Encoder(
-        input_dim=D_in,
-        hidden_dim=D_hidden,
-        output_dim=D_out,
+            input_dim=D_in,
+            hidden_dim=D_hidden,
+            output_dim=D_out,
         )
         doc_encoder = Encoder(
             input_dim=D_in,
@@ -35,35 +40,39 @@ def setup_semantics_embedder(config: str):
             checkpoint_path = get_wandb_checkpoint_path(
                 'kwokkenton-individual/mlx-week2-search-engine/towers_mlp:v44',
             )
+            # Load the model
+        checkpoint = torch.load(
+            checkpoint_path, map_location=device, weights_only=True,
+        )
+        query_encoder.load_state_dict(checkpoint['query_encoder_state_dict'])
+        doc_encoder.load_state_dict(checkpoint['doc_encoder_state_dict'])
+
+        semantics_embedder = SemanticsEmbedder(
+            query_encoder,
+            doc_encoder,
+            embeddings,
+            device,
+        )
+    elif config == 'baseline':
+        baseline_embedder = BaselineSemanticsEmbedder()
+        return baseline_embedder
     else:
         raise ValueError(f'Invalid config: {config}')
-    
 
-
-    # Load the model
-    checkpoint = torch.load(
-        checkpoint_path, map_location=device, weights_only=True,
-    )
-    query_encoder.load_state_dict(checkpoint['query_encoder_state_dict'])
-    doc_encoder.load_state_dict(checkpoint['doc_encoder_state_dict'])
-
-    semantics_embedder = SemanticsEmbedder(
-        query_encoder,
-        doc_encoder,
-        embeddings,
-        device,
-    )
     return semantics_embedder
 
 
 class SemanticsEmbedder:
     def __init__(
-        self, 
+        self,
         query_encoder: Encoder,
         doc_encoder: Encoder,
         embeddings: str,
         device: torch.device,
     ):
+        logger.info(
+            f'Initialising SemanticsEmbedder with embeddings: {embeddings}',
+        )
         if embeddings not in ['self-trained', 'word2vec-google-news-300']:
             raise ValueError(f'Invalid embeddings: {embeddings}')
         if embeddings == 'self-trained':
@@ -91,6 +100,29 @@ class SemanticsEmbedder:
     def embed_doc(self, doc: str):
         return self._normalize(
             self.doc_encoder.forward(self.embed_fn(doc).to(self.device)),
+        )
+
+    @staticmethod
+    def _normalize(vector: torch.tensor) -> torch.tensor:
+        """Normalizes a vector to unit length using L2 norm."""
+        norm = torch.linalg.norm(vector)
+        if norm == 0:
+            return vector
+        return vector / norm
+
+
+class BaselineSemanticsEmbedder:
+    def __init__(self):
+        logger.info('Initialising BaselineSemanticsEmbedder')
+        self.gensim_w2v = GensimWord2Vec()
+        self.embed_fn = self.gensim_w2v.get_mean_embedding
+
+    def embed_query(self, query: str):
+        return self._normalize(self.embed_fn(query))
+
+    def embed_doc(self, doc: str):
+        return self._normalize(
+            self.embed_fn(doc),
         )
 
     @staticmethod

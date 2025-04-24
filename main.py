@@ -19,12 +19,15 @@ logger.setLevel(logging.DEBUG)
 
 NUM_WORKERS = 4
 
-def print_validation_results(query: str, 
-                             similarities: torch.Tensor, 
-                             docs_strings: list[str], 
-                             positive_idx: int = 0):
+
+def print_validation_results(
+    query: str,
+    similarities: torch.Tensor,
+    docs_strings: list[str],
+    positive_idx: int = 0,
+):
     """Print validation results in a nice format.
-    
+
     Args:
         query: The search query
         similarities: Tensor of similarity scores
@@ -33,29 +36,36 @@ def print_validation_results(query: str,
     """
     # Convert similarities to list of floats
     similarities = similarities.cpu().numpy().tolist()
-    
+    docs_ids = torch.arange(len(similarities))
+
     # Create a formatted string
     output = []
-    output.append("=" * 80)
-    output.append(f"Query: {query}")
-    output.append("-" * 80)
-    
+    output.append('=' * 80)
+    output.append(f'Query: {query}')
+    output.append('-' * 80)
+
     # Sort documents by similarity
-    sorted_docs = sorted(zip(similarities, docs_strings), key=lambda x: x[0], reverse=True)
-    
-    for i, (sim, doc) in enumerate(sorted_docs):
+    sorted_docs = sorted(
+        zip(
+            similarities, docs_strings,
+            docs_ids,
+        ), key=lambda x: x[0], reverse=True,
+    )
+
+    for i, (sim, doc, doc_id) in enumerate(sorted_docs):
         # Mark positive document
-        is_positive = (i == positive_idx)
-        marker = "✅" if is_positive else "  "
-        
+        is_positive = (doc_id == positive_idx)
+        marker = '✅' if is_positive else '  '
+
         # Format the output
-        output.append(f"{marker} Similarity: {sim:.4f}")
-        output.append(f"   Document: {doc}")
-        output.append("-" * 80)
-    
+        output.append(f'{marker} Similarity: {sim:.4f}')
+        output.append(f'   Document: {doc}')
+        output.append('-' * 80)
+
     # Join and print
     # print("\n".join(output))
-    logger.info("\n".join(output))
+    logger.info('\n'.join(output))
+
 
 def run_sanity_check(
     q_vectors, pos_vectors, neg_vectors,
@@ -87,17 +97,18 @@ def run_sanity_check(
         ).sum()
 
     # Calculate averaged accuracy over the batch
-    accuracy = num_correct/ B
+    accuracy = num_correct / B
     return accuracy
 
 
 class Trainer:
     def __init__(
-        self, batch_size: int, 
-        num_negative_samples: int, 
+        self, batch_size: int,
+        num_negative_samples: int,
         mode: str,
         embeddings: str,
         device: torch.device,
+        rnn: bool = False,
         log_to_wandb: bool = False,
     ):
 
@@ -105,6 +116,7 @@ class Trainer:
         self.K = num_negative_samples
         self.mode = mode
         self.embeddings = embeddings
+        self.rnn = rnn
         self.device = device
         self.log_to_wandb = log_to_wandb
 
@@ -115,8 +127,13 @@ class Trainer:
         if embeddings not in ['self-trained', 'word2vec-google-news-300']:
             raise ValueError(f'Invalid embeddings: {embeddings}')
 
-        # Set up Mean Pooled sentence embedding model
+        # Set up sentence embedding model
+        # Either mean pooled or not pooled
         if embeddings == 'self-trained':
+            if self.rnn:
+                raise NotImplementedError(
+                    'Padding is not implemented for self-trained embeddings',
+                )
             self.tokeniser, self.w2v_model = setup_language_models()
 
             self.sentence_embedder = MeanPooledWordEmbedder(
@@ -127,11 +144,17 @@ class Trainer:
             self.embed_fn = self.sentence_embedder.embed_string
         elif embeddings == 'word2vec-google-news-300':
             self.gensim_w2v = GensimWord2Vec()
-            self.embed_fn = self.gensim_w2v.get_mean_embedding
 
+            if not self.rnn:
+                self.embed_fn = self.gensim_w2v.get_mean_embedding
+            else:
+                self.embed_fn = self.gensim_w2v.get_sentence_embeddings
+
+        # Change collate function based on whether padding is enabled
         self.collate_fn = partial(
             collate_fn_marco,
             embed_fn=self.embed_fn,
+            padding=self.rnn,
         )
 
         self.train_dl = DataLoader(
@@ -191,7 +214,7 @@ class Trainer:
                 # loss per batch
                 last_loss = running_loss / batches_print_frequency
                 logger.info(
-                    f'  batch {batch_idx + 1} loss: {last_loss} accuracy: {accuracy}',
+                    f'  For batch {batch_idx + 1}, the loss is {last_loss} and the accuracy is {accuracy}',
                 )
                 running_loss = 0.
 
@@ -202,7 +225,7 @@ class Trainer:
         batch,
         query_encoder: Encoder,
         doc_encoder: Encoder,
-    ):  
+    ):
         # Allow for variable batch sizes
         batch_size = len(batch[0])
 
@@ -214,12 +237,22 @@ class Trainer:
         # All these have shapes (batch_size, D_out)
         q_vectors = query_encoder.forward(batch_q_embedding)
         pos_vectors = doc_encoder.forward(batch_pos_embedding)
-        # Batch compute this, neg_vectors which has shape (batch_size, K, D_out)
-        neg_vectors = doc_encoder.forward(
-            batch_neg_embeddings.view(batch_size*self.K, -1),
-        )
-        neg_vectors = neg_vectors.view(batch_size, self.K, -1)
-
+        if not self.rnn:
+            # Batch compute this, neg_vectors which has shape (batch_size, K, D_out)
+            neg_vectors = doc_encoder.forward(
+                batch_neg_embeddings.view(batch_size*self.K, -1),
+            )
+            neg_vectors = neg_vectors.view(batch_size, self.K, -1)
+        else:
+            # The RNN encoder handles the batching
+            # Shape is (B, L, K, D_in), reshape to (B*K, L, D_in)
+            _, seq_length, _, D_in = batch_neg_embeddings.shape
+            batch_neg_embeddings = batch_neg_embeddings.permute(0, 2, 1, 3)
+            neg_vectors = doc_encoder.forward(
+                batch_neg_embeddings.reshape(
+                    batch_size*self.K, seq_length, D_in),
+            )
+            neg_vectors = neg_vectors.view(batch_size, self.K, -1)
         return q_vectors, pos_vectors, neg_vectors
 
     def validate(
@@ -228,7 +261,7 @@ class Trainer:
         doc_encoder: Encoder,
         loss_fn: TripletLoss,
     ):
-
+        # Run ablation here on validation set
         losses = []
         accuracies = []
 
@@ -252,12 +285,14 @@ class Trainer:
                 losses.append(loss.item())
 
         return sum(losses)/len(losses), sum(accuracies)/len(accuracies)
-    
-    def validate_single(self, 
-                        query_encoder: Encoder, 
-                        doc_encoder: Encoder):
+
+    def validate_single(
+        self,
+        query_encoder: Encoder,
+        doc_encoder: Encoder,
+    ):
         # Select random sample from the validation set
-        dataset = self.val_dl.dataset 
+        dataset = self.val_dl.dataset
         random_idx = random.randint(0, len(dataset))
         query, pos_doc, neg_docs = dataset[random_idx]
 
@@ -275,11 +310,15 @@ class Trainer:
             )
             # Compute cosine similarity
             docs_vectors = torch.cat([pos_vectors, neg_vectors.squeeze()])
-            similarities = torch.cosine_similarity(q_vectors, 
-                                                   docs_vectors, 
-                                                   dim=-1)
+            similarities = torch.cosine_similarity(
+                q_vectors,
+                docs_vectors,
+                dim=-1,
+            )
 
-            print_validation_results(query, similarities, docs_strings, positive_idx=0)
+            print_validation_results(
+                query, similarities, docs_strings, positive_idx=0,
+            )
 
     def train(
         self,
@@ -290,18 +329,19 @@ class Trainer:
         optimiser: torch.optim.Optimizer,
         batches_print_frequency: int = 200,
     ):
+
         config = {
-                    'embeddings': self.embeddings,
-                    'mode': self.mode,
-                    'model': 'towers-mlp',
-                    'epochs': epochs,
-                    'batch_size': self.batch_size,
-                    'num_negative_samples': self.K,
-                    'lr': lr,
-                    'D_hidden': D_hidden,
-                    'D_out': D_out,
-                }
-        
+            'embeddings': self.embeddings,
+            'mode': self.mode,
+            'model': 'rnn' if self.rnn else 'towers-mlp',
+            'epochs': epochs,
+            'batch_size': self.batch_size,
+            'num_negative_samples': self.K,
+            'lr': lr,
+            'D_hidden': D_hidden,
+            'D_out': D_out,
+        }
+
         logger.info(f'Training config: {config}')
 
         if self.log_to_wandb:
@@ -346,7 +386,10 @@ class Trainer:
                     wandb.run.dir, f'{datetime.now().strftime("%Y%m%d_%H%M%S")}.pth',
                 )
                 torch.save(checkpoint, checkpoint_path)
-                artifact = wandb.Artifact('towers_mlp', type='checkpoint')
+                if self.rnn:
+                    artifact = wandb.Artifact('towers_rnn', type='checkpoint')
+                else:
+                    artifact = wandb.Artifact('towers_mlp', type='checkpoint')
                 artifact.add_file(checkpoint_path)
                 wandb.run.log_artifact(artifact)
 
@@ -359,12 +402,13 @@ if __name__ == '__main__':
     mode = 'random'
     # embeddings = 'self-trained'
     embeddings = 'word2vec-google-news-300'
-    num_epochs = 5
+    num_epochs = 30
     # Model configs
-    D_hidden = 100
+    D_in = 300
+    D_hidden = 200
     D_out = 100
     batches_print_frequency = 200
-    log_to_wandb = False
+    log_to_wandb = True
 
     device = get_device()
 
@@ -375,9 +419,8 @@ if __name__ == '__main__':
         embeddings=embeddings,
         log_to_wandb=log_to_wandb,
         device=device,
+        rnn=True,
     )
-
-    D_in = 300
 
     # query_encoder = Encoder(
     #     input_dim=D_in, hidden_dim=D_hidden, output_dim=D_out,
@@ -393,21 +436,24 @@ if __name__ == '__main__':
         input_dim=D_in, hidden_dim=D_hidden, output_dim=D_out,
     )
 
+    if type(query_encoder) == RNNEncoder:
+        assert trainer.rnn == True, 'RNN encoder requires padding.'
+
     optimiser = torch.optim.Adam(
         list(query_encoder.parameters()) + list(doc_encoder.parameters()), lr=lr,
     )
 
-    # Load previously trained model
-    checkpoint_path = get_wandb_checkpoint_path(
-        'kwokkenton-individual/mlx-week2-search-engine/towers_mlp:v39',
-    )
+    # # Load previously trained model
+    # checkpoint_path = get_wandb_checkpoint_path(
+    #     'kwokkenton-individual/mlx-week2-search-engine/towers_mlp:v49',
+    # )
 
-    # Load the model
-    checkpoint = torch.load(
-        checkpoint_path, map_location=device, weights_only=True,
-    )
-    query_encoder.load_state_dict(checkpoint['query_encoder_state_dict'])
-    doc_encoder.load_state_dict(checkpoint['doc_encoder_state_dict'])
+    # # Load the model
+    # checkpoint = torch.load(
+    #     checkpoint_path, map_location=device, weights_only=True,
+    # )
+    # query_encoder.load_state_dict(checkpoint['query_encoder_state_dict'])
+    # doc_encoder.load_state_dict(checkpoint['doc_encoder_state_dict'])
 
     triplet_loss = TripletLoss()
     trainer.train(

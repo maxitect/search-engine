@@ -19,11 +19,11 @@ def load_ms_marco() -> DatasetDict:
 class MSMarcoDataset(Dataset):
     def __init__(self, split: str, mode: str, num_negative_samples: int = 10):
         """Dataset for training a retrieval model, giving a query and a list of
-            positive and negative answers. Returns a single positive samples and 
-            a number of negative samples in raw format (strings or list of 
+            positive and negative answers. Returns a single positive samples and
+            a number of negative samples in raw format (strings or list of
             strings).
 
-            This is for maximising the flexibility of downstream processing, 
+            This is for maximising the flexibility of downstream processing,
             which can be done in the dataloader.
 
         Args:
@@ -39,10 +39,10 @@ class MSMarcoDataset(Dataset):
 
         if split not in ['train', 'validation', 'test']:
             raise ValueError(f'Invalid split: {split}')
-        
+
         if mode not in ['hard', 'random']:
             raise ValueError(f'Invalid mode: {mode}')
-        
+
         ds = load_ms_marco()[split]
         logger.info(f'Loaded {split} dataset')
 
@@ -52,6 +52,7 @@ class MSMarcoDataset(Dataset):
         logger.info(f'Selected {len(self.ds)} rows with 1 answer')
         self.num_negative_samples = num_negative_samples
         self.mode = mode
+
     def __len__(self):
         return len(self.ds)
 
@@ -67,13 +68,17 @@ class MSMarcoDataset(Dataset):
         """
         # Want positive and negative samples
         if self.mode == 'hard':
-            query, positive_answer, negative_answers = self._get_entry_item_hard(idx)
+            query, positive_answer, negative_answers = self._get_entry_item_hard(
+                idx,
+            )
 
         elif self.mode == 'random':
-            query, positive_answer, negative_answers = self._get_entry_item_random(idx)
+            query, positive_answer, negative_answers = self._get_entry_item_random(
+                idx,
+            )
 
         return query, positive_answer, negative_answers
-    
+
     def _get_entry_item_random(self, idx):
         # Treat all 'passage_texts' as positive answers
         query = self.ds[idx]['query']
@@ -154,6 +159,7 @@ class MSMarcoDataset(Dataset):
             )
         return negative_samples
 
+
 def collate_fn_marco(batch, embed_fn, padding=False) -> tuple[
     torch.Tensor,
     torch.Tensor,
@@ -204,15 +210,18 @@ def collate_fn_marco(batch, embed_fn, padding=False) -> tuple[
         batch_q_embedding = pad_sequence(q_embeddings, batch_first=True)
         batch_pos_embedding = pad_sequence(p_embeddings, batch_first=True)
 
+        batch_neg_embeddings = []
+
         for b_idx in range(batch_size):
+            # Output shape: (L, K, D_in)
             neg_embeddings = pad_sequence(
                 [embed_fn(n) for n in neg_docs[b_idx]],
-                batch_first=True,
+                batch_first=False,
             )
-
             batch_neg_embeddings.append(neg_embeddings)
-
-        batch_neg_embeddings = pad_sequence(batch_neg_embeddings, batch_first=True)
+        # Output shape: (B, L, K, D_in)
+        batch_neg_embeddings = pad_sequence(
+            batch_neg_embeddings, batch_first=True,
+        )
 
     return batch_q_embedding, batch_pos_embedding, batch_neg_embeddings
-

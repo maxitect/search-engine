@@ -15,7 +15,7 @@ Semantic search is a data searching technique that focuses on understanding the 
 
 ### Dataset
 
-The MS Marco Dataset is available on HuggingFace. 
+The MS Marco Dataset is available on HuggingFace.
 
 In training
 
@@ -63,18 +63,29 @@ RNN Architecture
 
 The best way of evaluating the model is to use a top-k accuracy.
 
+Instead we compute the in-sample accuracy. Each training example has 1 positive and $N$ negatives.
+
+$$\text{accuracy} = \frac{TP}{TP + FP}$$
+
 Experiments
-
-
 
 Tower RNN Architecture
 
-| Setup| Last training accuracy (%) | Validation accuracy (%) | Checkpoint | 
-| --| --| --| --| 
+| Setup| Last training accuracy (%) | Validation accuracy (%) | Checkpoint |
+| --| --| --| --|
 | Tower MLP, hard negatives| 10 | 10 | towers_mlp:v19|
 |Tower MLP, random negatives | 30 | 25 | towers_mlp:v38|
 | Tower MLP, Gensim weights, random negatives | 88 | 84 | towers_mlp:v39 |
-| Tower RNN, Gensim weights, random negatives |  |  | towers_mlp:v39 |
+| Tower RNN, Gensim weights, random negatives |  | 75 | towers_mlp:v39 |
+
+It is good practice to greate a baseline whenever we are training a model.
+
+| Setup| Average validation accuracy (%) |
+| --| --|
+| Gensim (Random negatives)  |  92 |
+| Gensim (Hard negatives)  |  26 |
+| Random guessing of documents  |  10 |
+
 
 
 A baseline would be random guessing and the baseline accuracy is $1/(N+1)$. For $N = 20$, this is $4.8\%$.
@@ -83,19 +94,22 @@ Potential pitfalls
 
 1. Word not included in the tokeniser (not in Wikipedia/ or niche words), this is especially pertinent for acronyms. Example, we had a query called 'what is rba', which turned into '['what', 'is', '<UNK>']' in tokenised form.
 2. Training scheme was doing a rough-search, instead of a hard-search
-3. 
+3.
 
 
 ### Todo:
 
-Why is training so slow? 
+Why is training so slow?
 - I can Precompute all word vectors using the skipgram model and save as a dictionary
 - Profile my app
 - Solved by increasing the number of workers
 
 I'm interested in doing some ablation testing. Is the tower even needed?
+- On the test set and the validation set, just dot them together
 
-### Learnings: 
+What is the top-k retrieval accuracy?
+For each item in validation set, run the model and get the top-k retrieval accuracy
+### Learnings:
 
 - Embeddings are everything-- should base your project on stable foundations. preprocess data well first
 - Go end-to-end quickly
@@ -114,6 +128,8 @@ Running the search engine for the front-end
 ```bash
 streamlit run app.py --server.port 8080
 ```
+
+ChromaDB uses senc
 
 
 ## Installation
@@ -146,7 +162,7 @@ huggingface-cli login
 
 To activate
 
-```bash 
+```bash
 conda activate ss-env
 ```
 
@@ -164,5 +180,3 @@ Karpukhin, Vladimir, Barlas Oğuz, Sewon Min, Patrick Lewis, Ledell Wu, Sergey E
 
 The landmark paper for this is DPR, which compares it to other sparse methods like BM25. It notes
 - Methods like BM25 are sensitive to highly selective keywords and phrases, but cannot capture lexical variations or semantic relationships well. In contrast, DPR excels at semantic representation, but might lack sufficient capacity to represent salient phrases which appear rarely
-
-
