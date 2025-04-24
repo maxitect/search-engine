@@ -275,6 +275,33 @@ def show_random_example(model, val_loader, val_dataset, device, word_vectors):
         print(f"Correct Match: {'Yes' if is_selected[top_idx].item() == 1 else 'No'}")
         print(f"Batch Size: {len(query)} examples")
 
+def evaluate_test_set(model, test_loader, device, num_batches=10):
+    """Evaluate model on a subset of test batches."""
+    model.eval()
+    test_losses = []
+    
+    with torch.no_grad():
+        for i, test_batch in enumerate(test_loader):
+            if i >= num_batches:  # Only evaluate on first num_batches
+                break
+                
+            query = test_batch['query'].to(device)
+            pos_passage = test_batch['passage'].to(device)
+            neg_passage = test_batch['passage'][torch.randperm(len(test_batch['passage']))].to(device)
+            
+            query_emb = model.query_tower(query)
+            pos_emb = model.passage_tower(pos_passage)
+            neg_emb = model.passage_tower(neg_passage)
+            
+            loss = triplet_loss_function(
+                query_emb, pos_emb, neg_emb,
+                margin=0.2
+            )
+            test_losses.append(loss.item())
+    
+    model.train()
+    return np.mean(test_losses) if test_losses else float('nan')
+
 def train_model(config):
     # Initialize wandb
     wandb.init(
@@ -445,38 +472,15 @@ def train_model(config):
                 
                 # Log batch metrics
                 if batch_count % 100 == 0:
-                    # Evaluate on test set
-                    model.eval()
-                    test_losses = []
-                    with torch.no_grad():
-                        for test_batch in test_loader:
-                            query = test_batch['query'].to(device)
-                            pos_passage = test_batch['passage'].to(device)
-                            neg_passage = test_batch['passage'][torch.randperm(len(test_batch['passage']))].to(device)
-                            
-                            query_emb = model.query_tower(query)
-                            pos_emb = model.passage_tower(pos_passage)
-                            neg_emb = model.passage_tower(neg_passage)
-                            
-                            loss = triplet_loss_function(
-                                query_emb, pos_emb, neg_emb,
-                                margin=config.get('margin', 0.2)
-                            )
-                            test_losses.append(loss.item())
-                    
-                    avg_test_loss = np.mean(test_losses)
-                    model.train()
-                    
                     wandb.log({
                         'train/batch_loss': loss.item(),
                         'train/grad_norm': total_norm ** 0.5,
                         'train/batch_time': time.time() - batch_start_time,
                         'train/learning_rate': optimizer.param_groups[0]['lr'],
                         'train/batch': batch_count,
-                        'train/epoch': epoch + 1,
-                        'test/batch_loss': avg_test_loss  # Added test loss per batch
+                        'train/epoch': epoch + 1
                     })
-                    
+                
             except RuntimeError as e:
                 if "CUDNN_STATUS_EXECUTION_FAILED" in str(e):
                     torch.cuda.empty_cache()
@@ -645,7 +649,7 @@ def train_model(config):
     print(f'Training completed! Best validation loss: {best_val_loss:.4f}')
     wandb.finish()
     
-    # After training, evaluate on test set
+    # Final test evaluation
     print("\nEvaluating on test set...")
     model.eval()
     test_losses = []
@@ -676,13 +680,13 @@ def train_model(config):
     
     avg_test_loss = np.mean(test_losses)
     avg_test_accuracy = np.mean(test_accuracies)
-    print(f"Test Loss: {avg_test_loss:.4f}")
-    print(f"Test Accuracy: {avg_test_accuracy:.4f}")
+    print(f"Final Test Loss: {avg_test_loss:.4f}")
+    print(f"Final Test Accuracy: {avg_test_accuracy:.4f}")
     
-    # Log test metrics
+    # Log final test metrics
     wandb.log({
-        'test/loss': avg_test_loss,
-        'test/accuracy': avg_test_accuracy
+        'final/test_loss': avg_test_loss,
+        'final/test_accuracy': avg_test_accuracy
     })
     
     # Interactive example viewing with test set option
