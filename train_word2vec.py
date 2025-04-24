@@ -63,22 +63,40 @@ def get_combined_words():
     with open("data/text8", "r") as f:
         text8_text = f.read()
         text8_words = preprocess(text8_text)
+        print(f"Loaded {len(text8_words)} words from text8")
     
     # 2. Load MS-MARCO passages
     print("Loading MS-MARCO passages...")
-    dataset = load_dataset("ms_marco", "v1.1", split="train[:100%]")
+    # Load the full dataset
+    dataset = load_dataset("ms_marco", "v1.1", split="train")
     msmarco_words = []
-    for example in tqdm(dataset, desc="Processing MS-MARCO"):
-        passages = example['passages']['passage_text']
-        for passage in passages:
-            processed_words = preprocess(passage)
-            msmarco_words.extend(processed_words)
+    
+    # Process in chunks to manage memory
+    chunk_size = 10000
+    total_examples = len(dataset)
+    print(f"Total MS-MARCO examples: {total_examples}")
+    
+    for chunk_start in tqdm(range(0, total_examples, chunk_size), desc="Processing MS-MARCO chunks"):
+        chunk_end = min(chunk_start + chunk_size, total_examples)
+        chunk = dataset.select(range(chunk_start, chunk_end))
+        
+        for example in chunk:
+            passages = example['passages']['passage_text']
+            for passage in passages:
+                processed_words = preprocess(passage)
+                msmarco_words.extend(processed_words)
+        
+        # Print progress
+        print(f"Processed {chunk_end}/{total_examples} examples, current word count: {len(msmarco_words)}")
+    
+    print(f"Loaded {len(msmarco_words)} words from MS-MARCO")
     
     # Combine and filter words
     all_words = text8_words + msmarco_words
     word_counts = Counter(all_words)
-    filtered_words = [word for word in all_words if word_counts[word] >= 5]
+    filtered_words = [word for word in all_words if word_counts[word] >= 10]
     
+    print(f"Total combined words after filtering: {len(filtered_words)}")
     return filtered_words
 
 def get_similar_words(model, word, word2idx, idx2word, top_k=5):
@@ -116,12 +134,14 @@ def train():
     # Initialize wandb
     wandb.init(project="word2vec-cbow", config={
         "architecture": "CBOW",
-        "dataset": "text8+MS-MARCO",
+        "dataset": "text8+MS-MARCO-full",
         "embedding_dim": 300,
         "window_size": 5,
-        "batch_size": 2048,
+        "batch_size": 4096,  # Increased batch size for full dataset
         "test_size": 0.1,
-        "min_count": 10
+        "min_count": 10,
+        "initial_lr": 0.01,
+        "min_lr": 0.0001
     })
     
     # Create data directory if it doesn't exist
@@ -155,19 +175,35 @@ def train():
                 word2idx[target]
             ))
     
+    print(f"Created {len(train_data)} training pairs")
+    
     # Split data into train and test sets
     np.random.shuffle(train_data)
     split_idx = int(len(train_data) * 0.9)  # 90% train, 10% test
     train_set = train_data[:split_idx]
     test_set = train_data[split_idx:]
     
-    # 4. Initialize model
+    print(f"Training set size: {len(train_set)}")
+    print(f"Test set size: {len(test_set)}")
+    
+    # 4. Initialize model and optimizer
     model = CBOW(len(vocab), embedding_dim=300).to(device)
-    optimizer = optim.Adam(model.parameters(), lr=0.001)
+    optimizer = optim.Adam(model.parameters(), lr=0.01)
+    
+    # Add learning rate scheduler
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, 
+        mode='min',
+        factor=0.5,
+        patience=2,
+        verbose=True,
+        min_lr=0.0001
+    )
+    
     criterion = nn.CrossEntropyLoss()
     
     # 5. Training loop with progress bar
-    batch_size = 2048
+    batch_size = 4096  # Increased batch size
     num_epochs = 5
     
     for epoch in range(num_epochs):
@@ -200,16 +236,26 @@ def train():
                 correct += (predicted == target_tensor).sum().item()
                 total_loss += loss.item()
                 
+                # Update progress bar with more metrics
+                current_lr = optimizer.param_groups[0]['lr']
                 pbar.set_postfix({
                     "loss": f"{total_loss/(i/batch_size + 1):.2f}",
-                    "acc": f"{100*correct/total:.1f}%"
+                    "acc": f"{100*correct/total:.1f}%",
+                    "lr": f"{current_lr:.6f}"
                 })
                 
                 wandb.log({
                     "batch_loss": loss.item(),
                     "batch_accuracy": 100*correct/total,
+                    "learning_rate": current_lr,
                     "epoch": epoch + (i/len(train_set))
                 })
+        
+        # Calculate average loss for the epoch
+        avg_loss = total_loss / (len(train_set) // batch_size)
+        
+        # Update learning rate based on loss
+        scheduler.step(avg_loss)
         
         # Evaluation phase
         model.eval()
