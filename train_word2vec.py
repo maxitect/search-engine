@@ -110,27 +110,28 @@ def combine_datasets():
     return tokens, word2idx, idx2word
 
 class CBOW(nn.Module):
-    def __init__(self, vocab_size, embedding_dim=50):
+    def __init__(self, vocab_size, embedding_dim=25):
         super().__init__()
         self.vocab_size = vocab_size
         self.embedding_dim = embedding_dim
         
-        # Split vocabulary into chunks for memory efficiency
-        self.chunk_size = 10000  # Process 10k words at a time
+        # Split vocabulary into smaller chunks for memory efficiency
+        self.chunk_size = 5000  # Process 5k words at a time
         self.num_chunks = (vocab_size + self.chunk_size - 1) // self.chunk_size
         
-        # Create embedding chunks
+        # Create sparse embedding chunks
         self.embeddings = nn.ModuleList([
-            nn.Embedding(min(self.chunk_size, vocab_size - i * self.chunk_size), embedding_dim)
+            nn.Embedding(min(self.chunk_size, vocab_size - i * self.chunk_size), embedding_dim, sparse=True)
             for i in range(self.num_chunks)
         ])
         
+        # Use a smaller linear layer with sparse gradients
         self.linear = nn.Linear(embedding_dim, vocab_size)
         
         # Initialize weights with smaller values
         for emb in self.embeddings:
-            emb.weight.data.uniform_(-0.1 / embedding_dim, 0.1 / embedding_dim)
-        self.linear.weight.data.uniform_(-0.1 / embedding_dim, 0.1 / embedding_dim)
+            emb.weight.data.uniform_(-0.05 / embedding_dim, 0.05 / embedding_dim)
+        self.linear.weight.data.uniform_(-0.05 / embedding_dim, 0.05 / embedding_dim)
         self.linear.bias.data.zero_()
     
     def get_embedding(self, indices):
@@ -194,12 +195,12 @@ def train():
     wandb.init(project="word2vec-cbow", config={
         "architecture": "CBOW",
         "dataset": "text8+MS-MARCO",
-        "embedding_dim": 25,  # Further reduced from 50
+        "embedding_dim": 16,  # Further reduced from 25
         "window_size": 5,
-        "batch_size": 128,    # Further reduced from 256
+        "batch_size": 64,     # Further reduced from 128
         "learning_rate": 0.001,
         "epochs": 5,
-        "gradient_accumulation_steps": 64  # Increased from 32
+        "gradient_accumulation_steps": 128  # Increased from 64
     })
     
     # Set device
@@ -221,7 +222,7 @@ def train():
     train_data = []
     
     # Process in chunks to manage memory
-    chunk_size = 50000  # Further reduced from 100000
+    chunk_size = 25000  # Further reduced from 50000
     for i in tqdm(range(0, len(tokens), chunk_size), desc="Creating training pairs"):
         chunk_end = min(i + chunk_size, len(tokens))
         chunk = tokens[i:chunk_end]
@@ -276,7 +277,8 @@ def train():
         # Convert to half precision
         model = model.half()
     
-    optimizer = optim.Adam(model.parameters(), lr=wandb.config.learning_rate)
+    # Use sparse Adam optimizer for better memory efficiency
+    optimizer = optim.SparseAdam(model.parameters(), lr=wandb.config.learning_rate)
     
     # Initialize gradient scaler for mixed precision training
     scaler = torch.amp.GradScaler('cuda') if device.type == 'cuda' else None
@@ -354,7 +356,7 @@ def train():
                 del outputs
                 
                 # Clear CUDA cache more frequently
-                if device.type == 'cuda' and i % 5 == 0:
+                if device.type == 'cuda' and i % 2 == 0:
                     torch.cuda.empty_cache()
         
         # Evaluation
