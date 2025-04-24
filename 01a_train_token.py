@@ -1,4 +1,5 @@
 import collections
+import os
 import pickle
 import pandas as pd
 
@@ -59,8 +60,11 @@ print(f"This word should be 'beaches': {ids_to_words[5234]}")
 print(f"Index of word 'anarchism': {words_to_ids.get('anarchism')}")
 print(f"Index of word 'have': {words_to_ids.get('have')}")
 
-# Save updated vocabulary
+print('Saving tokenisation files...')
 with open(config.VOCAB_TO_ID_PATH, 'wb') as f:
     pickle.dump(words_to_ids, f)
 with open(config.ID_TO_VOCAB_PATH, 'wb') as f:
     pickle.dump(ids_to_words, f)
+
+print('Deleting downloaded text8 file...')
+os.remove('text8')

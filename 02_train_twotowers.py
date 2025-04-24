@@ -257,3 +257,9 @@ if __name__ == "__main__":
 
     print(f'Training completed! Best validation loss: {best_val_loss:.4f}')
     wandb.finish()
+    print('Deleting downloaded MS_MARCO data file...')
+    os.remove(
+        'ms_marco_test.parquet',
+        'ms_marco_train.parquet',
+        'ms_marco_validation.parquet'
+    )

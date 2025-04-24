@@ -2,18 +2,18 @@ import datetime
 import tqdm
 import wandb
 import torch
-import src.dataset as dataset
-import src.evaluate as evaluate
-from src.models.skipgram import SkipGram, negative_sampling_loss
-import src.config as config
 import os
 import argparse
 from torch.utils.data import random_split
 
+import src.dataset as dataset
+import src.evaluate as evaluate
+import src.config as config
+from src.models.skipgram import SkipGram, negative_sampling_loss
 from src.utils.lr_scheduler import get_lr_scheduler
 
 
-def main():
+if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Train SkipGram model')
     parser.add_argument(
         '--resume',
@@ -221,7 +221,3 @@ def main():
     print(
         f'Training completed. Best validation loss: {best_val_loss:.4f}, '
         f'Final test loss: {test_loss:.4f}')
-
-
-if __name__ == "__main__":
-    main()
