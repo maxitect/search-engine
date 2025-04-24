@@ -8,10 +8,17 @@ import torch.optim as optim
 from tqdm import tqdm
 import os
 import numpy as np
+import gc
 
 from src.config import Config
 from src.models.word2vec import Word2Vec
 from src.utils.data import load_text8_data, build_vocabulary, create_data_loader
+
+def print_memory_usage():
+    """Print current GPU memory usage."""
+    if torch.cuda.is_available():
+        print(f"GPU Memory allocated: {torch.cuda.memory_allocated() / 1024**2:.2f} MB")
+        print(f"GPU Memory cached: {torch.cuda.memory_reserved() / 1024**2:.2f} MB")
 
 def train_model(model: Word2Vec, train_loader: torch.utils.data.DataLoader, 
                 device: torch.device, config: Config) -> Word2Vec:
@@ -56,8 +63,16 @@ def train_model(model: Word2Vec, train_loader: torch.utils.data.DataLoader,
             if (i + 1) % config.gradient_accumulation_steps == 0:
                 optimizer.step()
                 optimizer.zero_grad()
+                
+                # Clear memory
+                torch.cuda.empty_cache()
+                gc.collect()
             
             total_loss += loss.item() * config.gradient_accumulation_steps
+            
+            # Print memory usage every 1000 batches
+            if (i + 1) % 1000 == 0:
+                print_memory_usage()
         
         # Handle remaining gradients
         if len(train_loader) % config.gradient_accumulation_steps != 0:
@@ -67,8 +82,9 @@ def train_model(model: Word2Vec, train_loader: torch.utils.data.DataLoader,
         avg_loss = total_loss / len(train_loader)
         print(f"Average loss: {avg_loss:.4f}")
         
-        # Clear memory
+        # Clear memory at the end of each epoch
         torch.cuda.empty_cache()
+        gc.collect()
     
     return model
 
@@ -102,11 +118,21 @@ def main():
     filtered_words = [word for word in words if word in word_to_idx]
     print(f"Words after filtering: {len(filtered_words)}")
     
-    # Create data loader
-    train_loader = create_data_loader(filtered_words, word_to_idx, config.window_size, config.batch_size)
+    # Clear memory before creating model
+    torch.cuda.empty_cache()
+    gc.collect()
+    print_memory_usage()
     
     # Create model
-    model = Word2Vec(len(vocab), config.embedding_dim).to(device)
+    print("Creating model...")
+    model = Word2Vec(len(vocab), config.embedding_dim)
+    model = model.to(device)
+    print_memory_usage()
+    
+    # Create data loader
+    print("Creating data loader...")
+    train_loader = create_data_loader(filtered_words, word_to_idx, config.window_size, config.batch_size)
+    print_memory_usage()
     
     # Train model
     print("Starting training...")
