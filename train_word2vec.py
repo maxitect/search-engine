@@ -114,41 +114,45 @@ class Word2VecDataset(Dataset):
         return torch.tensor(context, dtype=torch.long), torch.tensor(target, dtype=torch.long)
 
 class CBOW(nn.Module):
-    def __init__(self, vocab_size, embedding_dim, negative_samples):
+    def __init__(self, vocab_size, embedding_dim, negative_samples, word_freq):
         super().__init__()
         self.embeddings = nn.Embedding(vocab_size, embedding_dim)
         self.context_embeddings = nn.Embedding(vocab_size, embedding_dim)
         self.vocab_size = vocab_size
         self.negative_samples = negative_samples
+        self.word_freq = torch.tensor(word_freq, dtype=torch.float32)
         self._init_weights()
     
     def _init_weights(self):
-        """Proper initialization"""
-        init_range = 0.5 / self.embeddings.embedding_dim
+        # Better initialization range
+        init_range = 1.0 / math.sqrt(self.embeddings.embedding_dim)
         nn.init.uniform_(self.embeddings.weight, -init_range, init_range)
         nn.init.uniform_(self.context_embeddings.weight, -init_range, init_range)
     
     def forward(self, context, target):
-        # Positive examples
+        batch_size = context.size(0)
+        
+        # Context vector (average of context words)
         context_vec = self.context_embeddings(context).mean(dim=1)
-        target_vec = self.embeddings(target)
         
         # Positive score
-        pos_score = torch.bmm(target_vec.unsqueeze(1), 
-                            context_vec.unsqueeze(2)).squeeze().sigmoid().log()
+        target_vec = self.embeddings(target)
+        pos_score = torch.bmm(target_vec.unsqueeze(1), context_vec.unsqueeze(2)).squeeze()
+        pos_loss = F.logsigmoid(pos_score)
         
-        # Negative sampling
-        noise = torch.randint(0, self.vocab_size,
-                            (context.size(0), self.negative_samples),
-                            device=context.device)
-        noise_vec = self.embeddings(noise)
-        neg_score = torch.bmm(noise_vec, context_vec.unsqueeze(2)).squeeze().sigmoid().log().sum(1)
+        # Negative sampling with frequency-based distribution
+        noise_dist = self.word_freq.pow(0.75) / self.word_freq.pow(0.75).sum()
+        noise_words = torch.multinomial(noise_dist, 
+                                     batch_size * self.negative_samples,
+                                     replacement=True)
+        noise_words = noise_words.view(batch_size, self.negative_samples).to(context.device)
         
-        return -(pos_score + neg_score).mean()
-    
-    def get_embeddings(self):
-        return (self.embeddings.weight + self.context_embeddings.weight) / 2
-
+        # Negative score
+        noise_vec = self.embeddings(noise_words)
+        neg_score = torch.bmm(noise_vec, context_vec.unsqueeze(2)).squeeze()
+        neg_loss = F.logsigmoid(-neg_score).sum(1)
+        
+        return -(pos_loss + neg_loss).mean()
 def train():
     # Setup
     os.makedirs(Config.output_dir, exist_ok=True)
