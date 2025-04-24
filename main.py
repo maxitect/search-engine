@@ -65,7 +65,8 @@ def train_model(model: Word2Vec, train_loader: torch.utils.data.DataLoader,
                 optimizer.zero_grad()
                 
                 # Clear memory
-                torch.cuda.empty_cache()
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
                 gc.collect()
             
             total_loss += loss.item() * config.gradient_accumulation_steps
@@ -83,7 +84,8 @@ def train_model(model: Word2Vec, train_loader: torch.utils.data.DataLoader,
         print(f"Average loss: {avg_loss:.4f}")
         
         # Clear memory at the end of each epoch
-        torch.cuda.empty_cache()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
         gc.collect()
     
     return model
@@ -92,8 +94,8 @@ def main():
     # Load configuration
     config = Config()
     
-    # Check for GPU
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    # Force CPU for now
+    device = torch.device("cpu")
     print(f"Using device: {device}")
     
     # Check if text8 file exists
@@ -119,7 +121,8 @@ def main():
     print(f"Words after filtering: {len(filtered_words)}")
     
     # Clear memory before creating model
-    torch.cuda.empty_cache()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
     gc.collect()
     print_memory_usage()
     
