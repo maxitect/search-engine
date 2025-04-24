@@ -29,24 +29,24 @@ print(f"Using device: {device}")
 torch.backends.cudnn.benchmark = True
 
 # Initialize W&B
-wandb.init(project="word2vec-training", name="cbow-sparse-embeddings")
+wandb.init(project="word2vec-training", name="cbow-memory-optimized")
 
 class Config:
     # Data parameters
     window_size = 5
     min_word_freq = 5
+    max_vocab_size = 100000  # Limit vocabulary size to save memory
     
     # Model parameters
-    embedding_dim = 200
+    embedding_dim = 300
     learning_rate = 0.001
-    batch_size = 1024
+    batch_size = 1024  # Reduced batch size
     epochs = 5
     
     # Training optimizations
     use_sparse = True
     use_mixed_precision = True
-    gradient_accumulation_steps = 8  # Accumulate gradients over multiple batches
-    chunks = 10  # Process vocabulary in chunks to save memory
+    gradient_accumulation_steps = 16  # Increased for memory efficiency
     
     # Paths
     text8_path = "data/text8"
@@ -55,7 +55,7 @@ class Config:
     
     # Evaluation
     test_words = ["computer", "technology", "data", "learning", "system"]
-    eval_interval = 5000  # Evaluate every n batches
+    eval_interval = 10000  # Evaluate less frequently
     top_k = 10  # Number of similar words to find
 
 # Create output directory if it doesn't exist
@@ -85,35 +85,44 @@ def preprocess_text(text):
     return text
 
 def load_and_preprocess_data():
-    """Load and preprocess data from text8 and MS-MARCO datasets."""
+    """Load and preprocess data from text8 dataset with memory optimization."""
     print("Loading and preprocessing data...")
     
-    # Load text8 dataset
+    # Load text8 dataset in chunks to save memory
+    words = []
     try:
         with open(Config.text8_path, 'r', encoding='utf-8') as f:
-            text8_data = f.read()
-        text8_data = preprocess_text(text8_data)
-        print(f"Loaded text8 dataset: {len(text8_data.split())} words")
+            chunk_size = 10000000  # Process 10M characters at a time
+            while True:
+                chunk = f.read(chunk_size)
+                if not chunk:
+                    break
+                
+                chunk = preprocess_text(chunk)
+                words.extend(chunk.split())
+                
+                # Print progress
+                print(f"Processed {len(words)} words...")
+                
+                # Force garbage collection
+                gc.collect()
+        
+        print(f"Loaded text8 dataset: {len(words)} words")
     except Exception as e:
         print(f"Error loading text8 dataset: {e}")
-        text8_data = ""
-    
-    # In a real implementation, you would load MS-MARCO here
-    # For this example, we'll just use text8
-    all_text = text8_data
-    
-    # Split text into words
-    words = all_text.split()
+        words = []
     
     # Count word frequencies
+    print("Counting word frequencies...")
     word_counts = Counter(words)
     
-    # Filter words by frequency
-    filtered_words = [word for word in words if word_counts[word] >= Config.min_word_freq]
+    # Filter by frequency and limit vocabulary size
+    print("Filtering vocabulary...")
+    most_common_words = [word for word, count in word_counts.most_common(Config.max_vocab_size) 
+                         if count >= Config.min_word_freq]
     
     # Create word-to-index and index-to-word mappings
-    word_to_idx = {word: idx for idx, (word, _) in enumerate(word_counts.most_common()) 
-                   if word_counts[word] >= Config.min_word_freq}
+    word_to_idx = {word: idx for idx, word in enumerate(most_common_words)}
     idx_to_word = {idx: word for word, idx in word_to_idx.items()}
     
     # Save vocabulary
@@ -124,29 +133,67 @@ def load_and_preprocess_data():
     })
     vocab_df.to_csv(os.path.join(Config.output_dir, 'vocabulary.csv'), index=False)
     
+    # Filter words to only include vocabulary words to save memory
+    filtered_words = [word for word in words if word in word_to_idx]
+    
     print(f"Vocabulary size: {len(word_to_idx)}")
     print(f"Total words after filtering: {len(filtered_words)}")
     
+    # Clear memory
+    del words
+    gc.collect()
+    
     return filtered_words, word_to_idx, idx_to_word
 
-class CBOWDataset(Dataset):
+class SubsampledMemoryEfficientDataset(Dataset):
+    """Memory-efficient dataset that generates context-target pairs on-the-fly."""
     def __init__(self, words, word_to_idx, window_size, is_test=False):
         self.words = words
         self.word_to_idx = word_to_idx
         self.window_size = window_size
-        self.is_test = is_test
         
-        # Convert words to indices
-        self.word_indices = [self.word_to_idx[word] for word in self.words if word in self.word_to_idx]
+        # Convert words to indices (only store indices to save memory)
+        print("Converting words to indices...")
+        self.word_indices = np.array([word_to_idx[word] for word in words if word in word_to_idx], dtype=np.int32)
+        del words  # Free memory
+        
+        # Subsample frequent words to improve quality and reduce dataset size
+        print("Subsampling frequent words...")
+        self.word_indices = self._subsample_frequent_words(self.word_indices)
         
         # Split data into training and test set (90/10)
+        split_idx = int(0.9 * len(self.word_indices))
         if is_test:
-            self.word_indices = self.word_indices[int(0.9 * len(self.word_indices)):]
+            self.word_indices = self.word_indices[split_idx:]
         else:
-            self.word_indices = self.word_indices[:int(0.9 * len(self.word_indices))]
+            self.word_indices = self.word_indices[:split_idx]
+        
+        print(f"Dataset size: {len(self.word_indices)}")
+    
+    def _subsample_frequent_words(self, word_indices):
+        """Subsample frequent words according to word2vec paper."""
+        # Count frequencies
+        word_counts = Counter(word_indices)
+        total_words = len(word_indices)
+        
+        # Calculate subsampling probabilities
+        threshold = 1e-5
+        word_freq = {word: count / total_words for word, count in word_counts.items()}
+        keep_prob = {word: (np.sqrt(word_freq[word] / threshold) + 1) * (threshold / word_freq[word])
+                    for word in word_freq if word_freq[word] > threshold}
+        
+        # Apply subsampling (keep words based on probability)
+        keep_indices = np.random.random(len(word_indices)) < np.array(
+            [keep_prob.get(word, 1.0) for word in word_indices])
+        
+        subsampled_indices = word_indices[keep_indices]
+        print(f"Subsampling reduced data from {len(word_indices)} to {len(subsampled_indices)} words")
+        
+        return subsampled_indices
     
     def __len__(self):
-        return len(self.word_indices) - 2 * self.window_size
+        # Account for window size at both ends
+        return max(0, len(self.word_indices) - 2 * self.window_size)
     
     def __getitem__(self, idx):
         # Calculate start and end indices of the context window
@@ -155,7 +202,7 @@ class CBOWDataset(Dataset):
         
         # Get context indices (words around the target word)
         for i in range(target_idx - self.window_size, target_idx + self.window_size + 1):
-            if i != target_idx:  # Skip the target word
+            if i != target_idx and 0 <= i < len(self.word_indices):  # Skip target word & check bounds
                 context_indices.append(self.word_indices[i])
         
         # Target word
@@ -167,27 +214,28 @@ class CBOWDataset(Dataset):
         
         return context_tensor, target_tensor
 
-class CBOWModel(nn.Module):
+class MemoryEfficientCBOWModel(nn.Module):
     def __init__(self, vocab_size, embedding_dim, use_sparse=True):
-        super(CBOWModel, self).__init__()
+        super(MemoryEfficientCBOWModel, self).__init__()
         
-        # Embedding layer (can be sparse or dense)
-        if use_sparse:
-            self.embeddings = nn.Embedding(vocab_size, embedding_dim, sparse=True)
-        else:
-            self.embeddings = nn.Embedding(vocab_size, embedding_dim, sparse=False)
+        # Embedding layer
+        self.embeddings = nn.Embedding(vocab_size, embedding_dim, sparse=use_sparse)
         
-        # Linear layer for prediction
-        self.linear = nn.Linear(embedding_dim, vocab_size)
+        # Use parameter sharing for input and output embeddings
+        self.linear = nn.Linear(embedding_dim, vocab_size, bias=False)
+        self.linear.weight = self.embeddings.weight  # Tie weights
+        
+        # Small bias term
+        self.bias = nn.Parameter(torch.zeros(vocab_size))
         
         # Initialize weights
         self.init_weights()
     
     def init_weights(self):
-        initrange = 0.5 / self.embeddings.embedding_dim
+        # Initialize embeddings with smaller values
+        initrange = 0.1
         self.embeddings.weight.data.uniform_(-initrange, initrange)
-        self.linear.weight.data.uniform_(-initrange, initrange)
-        self.linear.bias.data.zero_()
+        self.bias.data.zero_()
     
     def forward(self, contexts):
         # Get embeddings for all context words
@@ -196,13 +244,69 @@ class CBOWModel(nn.Module):
         # Average embeddings (mean pooling)
         hidden = torch.mean(embeds, dim=1)
         
-        # Get output scores
-        output = self.linear(hidden)
+        # Get output scores with tied weights
+        output = self.linear(hidden) + self.bias
         
-        # Apply log softmax for numerical stability
+        # Use LogSoftmax for numerical stability
         log_probs = F.log_softmax(output, dim=1)
         
         return log_probs
+
+def train_on_chunk(model, data_chunk, optimizer, criterion, scaler, device, 
+                  gradient_accumulation_steps, use_mixed_precision):
+    """Train model on a chunk of data."""
+    # Create dataset and loader for this chunk
+    chunk_dataset = SubsampledMemoryEfficientDataset(data_chunk, word_to_idx, Config.window_size, is_test=False)
+    chunk_loader = DataLoader(chunk_dataset, batch_size=Config.batch_size, shuffle=True, num_workers=2)
+    
+    # Track metrics
+    total_loss = 0
+    total_batches = 0
+    
+    # Training loop
+    model.train()
+    progress_bar = tqdm(enumerate(chunk_loader), total=len(chunk_loader), desc="Training on chunk")
+    for batch_idx, (contexts, targets) in progress_bar:
+        # Move data to device
+        contexts = contexts.to(device)
+        targets = targets.to(device)
+        
+        # Forward pass with mixed precision
+        with torch.cuda.amp.autocast(enabled=use_mixed_precision):
+            log_probs = model(contexts)
+            loss = criterion(log_probs, targets)
+            # Scale loss by gradient accumulation steps
+            loss = loss / gradient_accumulation_steps
+        
+        # Backpropagation with mixed precision
+        scaler.scale(loss).backward()
+        
+        # Accumulate gradients
+        if (batch_idx + 1) % gradient_accumulation_steps == 0:
+            # Update weights
+            scaler.step(optimizer)
+            scaler.update()
+            optimizer.zero_grad()
+        
+        # Track loss
+        total_loss += loss.item() * gradient_accumulation_steps
+        total_batches += 1
+        
+        # Update progress bar
+        progress_bar.set_description(f"Loss: {total_loss/total_batches:.4f}")
+        
+        # Clear cache periodically
+        if batch_idx % 100 == 0:
+            torch.cuda.empty_cache()
+    
+    # Make sure to update any remaining accumulated gradients
+    if total_batches % gradient_accumulation_steps != 0:
+        scaler.step(optimizer)
+        scaler.update()
+        optimizer.zero_grad()
+    
+    # Return average loss
+    return total_loss / max(1, total_batches)
 
 def find_similar_words(model, word, word_to_idx, idx_to_word, top_k=10):
     """Find most similar words using cosine similarity."""
@@ -212,46 +316,61 @@ def find_similar_words(model, word, word_to_idx, idx_to_word, top_k=10):
     # Get the word index
     word_idx = word_to_idx[word]
     
-    # Get the word embedding (needs to be detached from computation graph)
+    # Get the word embedding
     word_vector = model.embeddings.weight[word_idx].detach().cpu().numpy()
     
-    # Calculate cosine similarities for all words
-    all_embeddings = model.embeddings.weight.detach().cpu().numpy()
-    similarities = np.dot(all_embeddings, word_vector) / (
-        np.linalg.norm(all_embeddings, axis=1) * np.linalg.norm(word_vector)
+    # Calculate similarities for a subset of words to save memory
+    embeddings = model.embeddings.weight.detach().cpu().numpy()
+    
+    # Calculate cosine similarities
+    similarities = np.dot(embeddings, word_vector) / (
+        np.linalg.norm(embeddings, axis=1) * np.linalg.norm(word_vector)
     )
     
-    # Get indices of most similar words (excluding the word itself)
+    # Get top k indices
     top_indices = np.argsort(similarities)[::-1][1:top_k+1]
     
-    # Return similar words and their similarities
+    # Return similar words
     similar_words = [(idx_to_word[idx], similarities[idx]) for idx in top_indices]
     
     return similar_words
 
-def chunk_vocabulary(vocab_size, num_chunks):
-    """Split vocabulary indices into chunks for memory-efficient processing."""
-    chunk_size = math.ceil(vocab_size / num_chunks)
-    return [range(i * chunk_size, min((i + 1) * chunk_size, vocab_size)) for i in range(num_chunks)]
-
 def train_word2vec():
-    """Train the Word2Vec model using CBOW architecture."""
+    """Train the Word2Vec model with memory optimization."""
     # Load and preprocess data
-    words, word_to_idx, idx_to_word = load_and_preprocess_data()
+    filtered_words, word_to_idx, idx_to_word = load_and_preprocess_data()
     
-    # Create datasets
-    train_dataset = CBOWDataset(words, word_to_idx, Config.window_size, is_test=False)
-    test_dataset = CBOWDataset(words, word_to_idx, Config.window_size, is_test=True)
-    
-    # Create data loaders
-    train_loader = DataLoader(train_dataset, batch_size=Config.batch_size, shuffle=True, num_workers=4)
-    test_loader = DataLoader(test_dataset, batch_size=Config.batch_size, shuffle=False, num_workers=4)
-    
-    # Initialize model
+    # Create model
     vocab_size = len(word_to_idx)
-    model = CBOWModel(vocab_size, Config.embedding_dim, use_sparse=Config.use_sparse).to(device)
+    print(f"Creating model with vocabulary size: {vocab_size}")
     
-    # Use different optimizers for sparse and dense embeddings
+    # Free some memory before creating the model
+    gc.collect()
+    torch.cuda.empty_cache()
+    
+    # Initialize model with CPU first, then move to GPU after
+    model = MemoryEfficientCBOWModel(
+        vocab_size=vocab_size, 
+        embedding_dim=Config.embedding_dim, 
+        use_sparse=Config.use_sparse
+    )
+    
+    # Move model to device
+    try:
+        model = model.to(device)
+    except RuntimeError as e:
+        print(f"Error moving model to GPU: {e}")
+        print("Trying with smaller embedding dimension...")
+        
+        # Try with smaller embedding dimension
+        Config.embedding_dim = 100  # Reduced from 300
+        model = MemoryEfficientCBOWModel(
+            vocab_size=vocab_size, 
+            embedding_dim=Config.embedding_dim, 
+            use_sparse=Config.use_sparse
+        ).to(device)
+    
+    # Configure optimizer based on sparse setting
     if Config.use_sparse:
         optimizer = optim.SparseAdam(model.parameters(), lr=Config.learning_rate)
     else:
@@ -263,71 +382,53 @@ def train_word2vec():
     # Learning rate scheduler
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', patience=1, factor=0.5)
     
-    # Configure mixed precision training if enabled
+    # Configure mixed precision training
     scaler = torch.cuda.amp.GradScaler(enabled=Config.use_mixed_precision)
     
     # Track best loss
     best_loss = float('inf')
     
-    print("Starting training...")
+    # Split data into smaller chunks for processing
+    chunk_size = 1000000  # Process 1M words at a time
+    num_chunks = (len(filtered_words) + chunk_size - 1) // chunk_size
+    
+    print(f"Training on {num_chunks} chunks of data...")
     
     # Training loop
     for epoch in range(Config.epochs):
         print(f"Epoch {epoch+1}/{Config.epochs}")
-        model.train()
+        epoch_start_time = time.time()
+        epoch_loss = 0
         
-        # Track metrics
-        total_loss = 0
-        total_batches = 0
-        start_time = time.time()
-        
-        # Initialize gradient accumulation
-        optimizer.zero_grad()
-        
-        # Process batches with progress bar
-        progress_bar = tqdm(enumerate(train_loader), total=len(train_loader))
-        for batch_idx, (contexts, targets) in progress_bar:
-            # Move data to device
-            contexts = contexts.to(device)
-            targets = targets.to(device)
+        # Process each chunk
+        for chunk_idx in range(num_chunks):
+            print(f"Processing chunk {chunk_idx+1}/{num_chunks}")
+            chunk_start = chunk_idx * chunk_size
+            chunk_end = min((chunk_idx + 1) * chunk_size, len(filtered_words))
+            data_chunk = filtered_words[chunk_start:chunk_end]
             
-            # Forward pass with mixed precision
-            with torch.cuda.amp.autocast(enabled=Config.use_mixed_precision):
-                log_probs = model(contexts)
-                loss = criterion(log_probs, targets)
-                # Scale loss by gradient accumulation steps
-                loss = loss / Config.gradient_accumulation_steps
+            # Train on this chunk
+            chunk_loss = train_on_chunk(
+                model=model,
+                data_chunk=data_chunk,
+                optimizer=optimizer,
+                criterion=criterion,
+                scaler=scaler,
+                device=device,
+                gradient_accumulation_steps=Config.gradient_accumulation_steps,
+                use_mixed_precision=Config.use_mixed_precision
+            )
             
-            # Backpropagation with mixed precision
-            scaler.scale(loss).backward()
+            epoch_loss += chunk_loss * (chunk_end - chunk_start)
             
-            # Accumulate gradients over multiple batches
-            if (batch_idx + 1) % Config.gradient_accumulation_steps == 0:
-                # Update weights
-                scaler.step(optimizer)
-                scaler.update()
-                optimizer.zero_grad()
+            # Log to wandb
+            wandb.log({
+                "chunk_loss": chunk_loss,
+                "chunk": chunk_idx + epoch * num_chunks
+            })
             
-            # Track loss (multiply back by accumulation steps to get true loss)
-            total_loss += loss.item() * Config.gradient_accumulation_steps
-            total_batches += 1
-            
-            # Update progress bar
-            progress_bar.set_description(f"Loss: {total_loss/total_batches:.4f}")
-            
-            # Clear cache to save memory
-            if batch_idx % 1000 == 0:
-                torch.cuda.empty_cache()
-            
-            # Evaluate and log
-            if batch_idx % Config.eval_interval == 0 and batch_idx > 0:
-                # Log loss
-                wandb.log({
-                    "train_loss": total_loss / total_batches,
-                    "learning_rate": optimizer.param_groups[0]['lr'],
-                    "batch": batch_idx + epoch * len(train_loader)
-                })
-                
+            # Evaluate every few chunks
+            if chunk_idx % 2 == 0:
                 # Find similar words for test words
                 model.eval()
                 for test_word in Config.test_words:
@@ -337,11 +438,24 @@ def train_word2vec():
                         for word, similarity in similar_words:
                             print(f"  {word}: {similarity:.4f}")
                 model.train()
+            
+            # Clear memory between chunks
+            gc.collect()
+            torch.cuda.empty_cache()
         
         # Calculate average loss for epoch
-        epoch_loss = total_loss / total_batches
-        epoch_time = time.time() - start_time
-        print(f"Epoch {epoch+1} completed in {epoch_time:.2f}s, Loss: {epoch_loss:.4f}")
+        avg_epoch_loss = epoch_loss / len(filtered_words)
+        epoch_time = time.time() - epoch_start_time
+        print(f"Epoch {epoch+1} completed in {epoch_time:.2f}s, Loss: {avg_epoch_loss:.4f}")
+        
+        # Create test dataset
+        test_dataset = SubsampledMemoryEfficientDataset(
+            filtered_words[-int(len(filtered_words) * 0.1):],  # Use last 10% for testing
+            word_to_idx, 
+            Config.window_size, 
+            is_test=True
+        )
+        test_loader = DataLoader(test_dataset, batch_size=Config.batch_size, shuffle=False, num_workers=2)
         
         # Evaluate on test set
         model.eval()
@@ -359,7 +473,7 @@ def train_word2vec():
                 test_loss += loss.item()
                 test_batches += 1
         
-        avg_test_loss = test_loss / test_batches
+        avg_test_loss = test_loss / max(1, test_batches)
         print(f"Test Loss: {avg_test_loss:.4f}")
         
         # Update learning rate
@@ -368,7 +482,7 @@ def train_word2vec():
         # Log to wandb
         wandb.log({
             "epoch": epoch + 1,
-            "train_loss": epoch_loss,
+            "train_loss": avg_epoch_loss,
             "test_loss": avg_test_loss,
             "epoch_time": epoch_time
         })
@@ -376,48 +490,64 @@ def train_word2vec():
         # Save checkpoint if it's the best model
         if avg_test_loss < best_loss:
             best_loss = avg_test_loss
+            # Save in CPU to avoid CUDA memory issues
+            cpu_model = model.cpu()
             torch.save({
                 'epoch': epoch,
-                'model_state_dict': model.state_dict(),
+                'model_state_dict': cpu_model.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
                 'loss': best_loss,
-                'word_to_idx': word_to_idx,
-                'idx_to_word': idx_to_word
             }, os.path.join(Config.output_dir, 'best_model.pt'))
+            model.to(device)  # Move back to GPU
             print("Saved new best model")
     
     print("Training complete!")
     
-    # Save final embeddings
+    # Save final model in CPU
+    model = model.cpu()
+    
+    # Save embeddings
     print("Saving embeddings...")
-    embeddings = model.embeddings.weight.data.cpu().numpy()
-    np.save(os.path.join(Config.output_dir, 'word2vec_embeddings.npy'), embeddings)
+    embeddings = model.embeddings.weight.data.numpy()
+    
+    # Save in chunks to avoid memory issues
+    chunk_size = 10000
+    for i in range(0, len(word_to_idx), chunk_size):
+        chunk_end = min(i + chunk_size, len(word_to_idx))
+        chunk_embeddings = embeddings[i:chunk_end]
+        np.save(os.path.join(Config.output_dir, f'word2vec_embeddings_chunk_{i}.npy'), chunk_embeddings)
+    
+    # Save vocabulary separately
+    with open(os.path.join(Config.output_dir, 'vocabulary.txt'), 'w', encoding='utf-8') as f:
+        for word, idx in word_to_idx.items():
+            f.write(f"{word}\t{idx}\n")
     
     # Save model
     torch.save(model.state_dict(), os.path.join(Config.output_dir, 'final_model.pt'))
-    
-    # Create word vectors file in text format (word and its embedding)
-    with open(os.path.join(Config.output_dir, 'word_vectors.txt'), 'w', encoding='utf-8') as f:
-        f.write(f"{len(word_to_idx)} {Config.embedding_dim}\n")
-        for word, idx in word_to_idx.items():
-            vector_str = ' '.join(str(val) for val in embeddings[idx])
-            f.write(f"{word} {vector_str}\n")
     
     print(f"All files saved to {Config.output_dir}")
     
     return model, word_to_idx, idx_to_word
 
 if __name__ == "__main__":
-    model, word_to_idx, idx_to_word = train_word2vec()
-    
-    # Evaluate final model on test words
-    print("\n=== Final Model Evaluation ===")
-    for test_word in Config.test_words:
-        if test_word in word_to_idx:
-            similar_words = find_similar_words(model, test_word, word_to_idx, idx_to_word, Config.top_k)
-            print(f"\nSimilar words to '{test_word}':")
-            for word, similarity in similar_words:
-                print(f"  {word}: {similarity:.4f}")
-    
-    # Complete W&B run
-    wandb.finish()
+    try:
+        # Try to free as much memory as possible
+        gc.collect()
+        torch.cuda.empty_cache()
+        
+        model, word_to_idx, idx_to_word = train_word2vec()
+        
+        # Evaluate final model on test words
+        print("\n=== Final Model Evaluation ===")
+        for test_word in Config.test_words:
+            if test_word in word_to_idx:
+                similar_words = find_similar_words(model, test_word, word_to_idx, idx_to_word, Config.top_k)
+                print(f"\nSimilar words to '{test_word}':")
+                for word, similarity in similar_words:
+                    print(f"  {word}: {similarity:.4f}")
+        
+    except Exception as e:
+        print(f"Error during training: {e}")
+    finally:
+        # Complete W&B run
+        wandb.finish()
