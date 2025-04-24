@@ -1,5 +1,5 @@
 """
-Simple Word2Vec implementation for text8 and MS-MARCO datasets.
+Simple Word2Vec implementation for text8 and MS-MARCO datasets with memory optimization.
 """
 
 import torch
@@ -10,14 +10,17 @@ import numpy as np
 from tqdm import tqdm
 import os
 import json
+import gc
 
 # Configuration
 WINDOW_SIZE = 5
-MIN_WORD_FREQ = 5  # Reduced to include more words
-EMBEDDING_DIM = 16  # Increased for better word representation
-BATCH_SIZE = 128
+MIN_WORD_FREQ = 5
+EMBEDDING_DIM = 8  # Reduced for memory efficiency
+BATCH_SIZE = 64  # Reduced batch size
 LEARNING_RATE = 0.001
 EPOCHS = 5
+CHUNK_SIZE = 1000000  # Process 1M words at a time
+GRADIENT_ACCUMULATION_STEPS = 4  # Accumulate gradients
 
 class Word2Vec(nn.Module):
     def __init__(self, vocab_size, embedding_dim):
@@ -40,72 +43,60 @@ class Word2Vec(nn.Module):
         return torch.log_softmax(output, dim=1)
 
 def load_text8_data(file_path):
-    """Load and preprocess text8 data."""
+    """Load and preprocess text8 data in chunks."""
     print("Loading text8 data...")
+    words = []
     with open(file_path, 'r', encoding='utf-8') as f:
-        text = f.read().lower()
-    return text.split()
+        while True:
+            chunk = f.read(CHUNK_SIZE)
+            if not chunk:
+                break
+            words.extend(chunk.lower().split())
+            print(f"Processed {len(words)} words...")
+    return words
 
 def load_msmarco_data(file_path):
-    """Load and preprocess MS-MARCO data."""
+    """Load and preprocess MS-MARCO data in chunks."""
     print("Loading MS-MARCO data...")
     words = []
     with open(file_path, 'r', encoding='utf-8') as f:
-        for line in f:
+        for line in tqdm(f):
             data = json.loads(line)
             # Process query
             words.extend(data['query'].lower().split())
             # Process passages
             for passage in data['passages']:
                 words.extend(passage['passage_text'].lower().split())
+            
+            # Clear memory periodically
+            if len(words) % CHUNK_SIZE == 0:
+                gc.collect()
+                torch.cuda.empty_cache()
     return words
 
-def load_data(text8_path, msmarco_path):
-    """Load and preprocess both datasets."""
-    # Load text8 data
-    text8_words = load_text8_data(text8_path)
-    print(f"Text8 words: {len(text8_words)}")
-    
-    # Load MS-MARCO data
-    msmarco_words = load_msmarco_data(msmarco_path)
-    print(f"MS-MARCO words: {len(msmarco_words)}")
-    
-    # Combine datasets
-    all_words = text8_words + msmarco_words
-    print(f"Total words: {len(all_words)}")
-    
-    # Count word frequencies
-    word_counts = Counter(all_words)
-    
-    # Filter vocabulary by frequency only
+def build_vocabulary(words):
+    """Build vocabulary from words."""
+    print("Building vocabulary...")
+    word_counts = Counter(words)
     vocab = [word for word, count in word_counts.items() if count >= MIN_WORD_FREQ]
-    
-    # Create word to index mapping
     word_to_idx = {word: idx for idx, word in enumerate(vocab)}
     idx_to_word = {idx: word for word, idx in word_to_idx.items()}
-    
-    # Filter words to only include vocabulary words
-    filtered_words = [word for word in all_words if word in word_to_idx]
-    
-    print(f"Vocabulary size: {len(vocab)}")
-    print(f"Words after filtering: {len(filtered_words)}")
-    
-    return filtered_words, word_to_idx, idx_to_word
+    return vocab, word_to_idx, idx_to_word
 
-def create_context_target_pairs(words, word_to_idx):
-    """Create context-target pairs for training."""
+def create_context_target_pairs(words, word_to_idx, start_idx, end_idx):
+    """Create context-target pairs for a chunk of words."""
     pairs = []
-    for i in range(WINDOW_SIZE, len(words) - WINDOW_SIZE):
+    for i in range(start_idx + WINDOW_SIZE, end_idx - WINDOW_SIZE):
         target = word_to_idx[words[i]]
         context = [word_to_idx[words[j]] for j in range(i - WINDOW_SIZE, i + WINDOW_SIZE + 1) 
                   if j != i]
         pairs.append((context, target))
     return pairs
 
-def train_model(model, train_data, device):
-    """Train the Word2Vec model."""
-    optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE)
-    criterion = nn.NLLLoss()
+def train_on_chunk(model, words, word_to_idx, start_idx, end_idx, device):
+    """Train model on a chunk of data."""
+    # Create training pairs for this chunk
+    train_data = create_context_target_pairs(words, word_to_idx, start_idx, end_idx)
     
     # Convert to tensors
     contexts = torch.tensor([pair[0] for pair in train_data], dtype=torch.long)
@@ -115,28 +106,66 @@ def train_model(model, train_data, device):
     dataset = torch.utils.data.TensorDataset(contexts, targets)
     dataloader = torch.utils.data.DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True)
     
+    # Training setup
+    optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE)
+    criterion = nn.NLLLoss()
+    
     # Training loop
+    total_loss = 0
+    optimizer.zero_grad()
+    
+    for batch_idx, (contexts, targets) in enumerate(tqdm(dataloader)):
+        # Move to device
+        contexts = contexts.to(device)
+        targets = targets.to(device)
+        
+        # Forward pass
+        output = model(contexts)
+        loss = criterion(output, targets)
+        loss = loss / GRADIENT_ACCUMULATION_STEPS
+        
+        # Backward pass
+        loss.backward()
+        
+        # Accumulate gradients
+        if (batch_idx + 1) % GRADIENT_ACCUMULATION_STEPS == 0:
+            optimizer.step()
+            optimizer.zero_grad()
+            total_loss += loss.item() * GRADIENT_ACCUMULATION_STEPS
+            
+            # Clear memory
+            gc.collect()
+            torch.cuda.empty_cache()
+    
+    # Handle remaining gradients
+    if len(dataloader) % GRADIENT_ACCUMULATION_STEPS != 0:
+        optimizer.step()
+        optimizer.zero_grad()
+    
+    return total_loss / len(dataloader)
+
+def train_model(model, words, word_to_idx, device):
+    """Train the Word2Vec model in chunks."""
+    print("Starting training...")
+    num_chunks = (len(words) + CHUNK_SIZE - 1) // CHUNK_SIZE
+    
     for epoch in range(EPOCHS):
         print(f"\nEpoch {epoch + 1}/{EPOCHS}")
         total_loss = 0
         
-        for contexts, targets in tqdm(dataloader):
-            # Move to device
-            contexts = contexts.to(device)
-            targets = targets.to(device)
+        for chunk_idx in range(num_chunks):
+            start_idx = chunk_idx * CHUNK_SIZE
+            end_idx = min((chunk_idx + 1) * CHUNK_SIZE, len(words))
             
-            # Forward pass
-            output = model(contexts)
-            loss = criterion(output, targets)
+            print(f"Processing chunk {chunk_idx + 1}/{num_chunks}")
+            chunk_loss = train_on_chunk(model, words, word_to_idx, start_idx, end_idx, device)
+            total_loss += chunk_loss
             
-            # Backward pass
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
-            
-            total_loss += loss.item()
+            # Clear memory between chunks
+            gc.collect()
+            torch.cuda.empty_cache()
         
-        avg_loss = total_loss / len(dataloader)
+        avg_loss = total_loss / num_chunks
         print(f"Average loss: {avg_loss:.4f}")
     
     return model
@@ -178,18 +207,20 @@ def main():
         print(f"Error: MS-MARCO file not found at {msmarco_path}")
         return
     
-    words, word_to_idx, idx_to_word = load_data(text8_path, msmarco_path)
+    # Load data
+    text8_words = load_text8_data(text8_path)
+    msmarco_words = load_msmarco_data(msmarco_path)
+    all_words = text8_words + msmarco_words
     
-    # Create training data
-    print("Creating training pairs...")
-    train_data = create_context_target_pairs(words, word_to_idx)
+    # Build vocabulary
+    vocab, word_to_idx, idx_to_word = build_vocabulary(all_words)
+    print(f"Vocabulary size: {len(vocab)}")
     
     # Create model
-    model = Word2Vec(len(word_to_idx), EMBEDDING_DIM).to(device)
+    model = Word2Vec(len(vocab), EMBEDDING_DIM).to(device)
     
     # Train model
-    print("Training model...")
-    model = train_model(model, train_data, device)
+    model = train_model(model, all_words, word_to_idx, device)
     
     # Test the model
     test_words = ["computer", "technology", "data", "learning", "system", "search", "query", "document"]
