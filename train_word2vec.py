@@ -162,7 +162,7 @@ def train():
     test_set = train_data[split_idx:]
     
     # 4. Initialize model
-    model = CBOW(len(vocab), embedding_dim=300)
+    model = CBOW(len(vocab), embedding_dim=300).to(device)
     optimizer = optim.Adam(model.parameters(), lr=0.001)
     criterion = nn.CrossEntropyLoss()
     
@@ -177,7 +177,6 @@ def train():
         correct = 0
         total = 0
         
-        # Training phase
         with tqdm(range(0, len(train_set), batch_size)) as pbar:
             pbar.set_description(f"Epoch {epoch+1}/{num_epochs} - Training")
             
@@ -204,6 +203,12 @@ def train():
                 pbar.set_postfix({
                     "loss": f"{total_loss/(i/batch_size + 1):.2f}",
                     "acc": f"{100*correct/total:.1f}%"
+                })
+                
+                wandb.log({
+                    "batch_loss": loss.item(),
+                    "batch_accuracy": 100*correct/total,
+                    "epoch": epoch + (i/len(train_set))
                 })
         
         # Evaluation phase
