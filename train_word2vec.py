@@ -34,20 +34,21 @@ wandb.init(project="word2vec-training", name="cbow-memory-optimized")
 class Config:
     # Data parameters
     window_size = 5
-    min_word_freq = 10  # Increased to reduce vocabulary
-    max_vocab_size = 50000  # Reduced from 100000
+    min_word_freq = 20  # Increased to reduce vocabulary
+    max_vocab_size = 25000  # Reduced from 50000
     
     # Model parameters
-    embedding_dim = 50  # Reduced from 300
+    embedding_dim = 25  # Reduced from 50
     learning_rate = 0.001
-    batch_size = 512  # Reduced from 1024
+    initial_batch_size = 256  # Reduced from 512
     epochs = 5
     
     # Training optimizations
     use_sparse = True
     use_mixed_precision = True
-    gradient_accumulation_steps = 32  # Increased for memory efficiency
-    chunk_size = 500000  # Process 500K words at a time
+    gradient_accumulation_steps = 64  # Increased from 32
+    chunk_size = 250000  # Reduced from 500000
+    memory_safety_factor = 0.7  # Safety factor for memory usage
     
     # Paths
     text8_path = "data/text8"
@@ -56,7 +57,7 @@ class Config:
     
     # Evaluation
     test_words = ["computer", "technology", "data", "learning", "system"]
-    eval_interval = 5000
+    eval_interval = 2500
     top_k = 10
 
 # Create output directory if it doesn't exist
@@ -215,12 +216,32 @@ class SubsampledMemoryEfficientDataset(Dataset):
         
         return context_tensor, target_tensor
 
+def get_gpu_memory():
+    """Get available GPU memory in MB"""
+    if torch.cuda.is_available():
+        return torch.cuda.get_device_properties(0).total_memory / (1024 * 1024)
+    return 0
+
+def calculate_dynamic_batch_size(model, device, safety_factor=0.7):
+    """Calculate optimal batch size based on available memory"""
+    total_memory = get_gpu_memory()
+    if total_memory == 0:
+        return Config.initial_batch_size
+    
+    # Estimate memory per sample
+    sample_size = (Config.embedding_dim * Config.window_size * 4)  # 4 bytes per float
+    max_batch_size = int((total_memory * safety_factor) / sample_size)
+    
+    # Ensure batch size is a power of 2 and within reasonable limits
+    batch_size = min(2 ** int(np.log2(max_batch_size)), Config.initial_batch_size)
+    return max(32, batch_size)  # Minimum batch size of 32
+
 class MemoryEfficientCBOWModel(nn.Module):
     def __init__(self, vocab_size, embedding_dim, use_sparse=True):
         super(MemoryEfficientCBOWModel, self).__init__()
         
-        # Split vocabulary into chunks for memory efficiency
-        self.chunk_size = 10000  # Process 10K words at a time
+        # Split vocabulary into smaller chunks
+        self.chunk_size = 5000  # Reduced from 10000
         self.num_chunks = (vocab_size + self.chunk_size - 1) // self.chunk_size
         
         # Create embedding chunks
@@ -243,7 +264,7 @@ class MemoryEfficientCBOWModel(nn.Module):
         self.linear.weight.data.uniform_(-initrange, initrange)
     
     def get_embedding(self, indices):
-        """Get embeddings from appropriate chunk"""
+        """Get embeddings from appropriate chunk with memory optimization"""
         embeddings = []
         for i in range(self.num_chunks):
             mask = (indices >= i * self.chunk_size) & (indices < (i + 1) * self.chunk_size)
@@ -278,9 +299,13 @@ class MemoryEfficientCBOWModel(nn.Module):
 def train_on_chunk(model, data_chunk, optimizer, criterion, scaler, device, 
                   gradient_accumulation_steps, use_mixed_precision):
     """Train model on a chunk of data with memory optimization"""
+    # Calculate dynamic batch size
+    batch_size = calculate_dynamic_batch_size(model, device, Config.memory_safety_factor)
+    print(f"Using dynamic batch size: {batch_size}")
+    
     # Create dataset and loader for this chunk
     chunk_dataset = SubsampledMemoryEfficientDataset(data_chunk, word_to_idx, Config.window_size, is_test=False)
-    chunk_loader = DataLoader(chunk_dataset, batch_size=Config.batch_size, shuffle=True, num_workers=0)
+    chunk_loader = DataLoader(chunk_dataset, batch_size=batch_size, shuffle=True, num_workers=0)
     
     # Track metrics
     total_loss = 0
@@ -312,6 +337,7 @@ def train_on_chunk(model, data_chunk, optimizer, criterion, scaler, device,
             
             # Clear cache after each gradient step
             torch.cuda.empty_cache()
+            gc.collect()
         
         # Track loss
         total_loss += loss.item() * gradient_accumulation_steps
@@ -321,7 +347,7 @@ def train_on_chunk(model, data_chunk, optimizer, criterion, scaler, device,
         progress_bar.set_description(f"Loss: {total_loss/total_batches:.4f}")
         
         # Clear memory periodically
-        if batch_idx % 50 == 0:
+        if batch_idx % 25 == 0:  # More frequent cleanup
             torch.cuda.empty_cache()
             gc.collect()
     
@@ -469,7 +495,7 @@ def train_word2vec():
     embeddings = model.embeddings.weight.data.cpu().numpy()
     
     # Save in chunks
-    chunk_size = 10000
+    chunk_size = 5000  # Reduced from 10000
     for i in range(0, len(word_to_idx), chunk_size):
         chunk_end = min(i + chunk_size, len(word_to_idx))
         chunk_embeddings = embeddings[i:chunk_end]
