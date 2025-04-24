@@ -23,10 +23,10 @@ class Config:
     negative_samples = 10
     
     # Training
-    batch_size = 65536
+    batch_size = 5000 #65536
     initial_lr = 0.025
     min_lr = 0.0001
-    epochs = 20
+    epochs = 5
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
 # Text preprocessing
