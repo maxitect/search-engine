@@ -5,26 +5,41 @@ import torch
 from engine.utils import get_wandb_checkpoint_path, get_device
 from engine.text.gensim_w2v import GensimWord2Vec
 
-def setup_semantics_embedder():
-    # Pull model from wandb
+def setup_semantics_embedder(config: str):
     device = get_device()
-    D_in = 300
-    D_hidden = 100
-    D_out = 100
 
-    checkpoint_path = get_wandb_checkpoint_path(
-        'kwokkenton-individual/mlx-week2-search-engine/towers_mlp:v38',
-    )
-    query_encoder = Encoder(
+    if config == 'my_embeddings' or config == 'gensim_embeddings':
+        D_in = 300
+        D_hidden = 100
+        D_out = 100
+
+        query_encoder = Encoder(
         input_dim=D_in,
         hidden_dim=D_hidden,
         output_dim=D_out,
-    )
-    doc_encoder = Encoder(
-        input_dim=D_in,
-        hidden_dim=D_hidden,
-        output_dim=D_out,
-    )
+        )
+        doc_encoder = Encoder(
+            input_dim=D_in,
+            hidden_dim=D_hidden,
+            output_dim=D_out,
+        )
+        if config == 'my_embeddings':
+            embeddings = 'self-trained'
+            # Pull model from wandb
+            checkpoint_path = get_wandb_checkpoint_path(
+                'kwokkenton-individual/mlx-week2-search-engine/towers_mlp:v38',
+            )
+        elif config == 'gensim_embeddings':
+            embeddings = 'word2vec-google-news-300'
+            # Pull model from wandb
+            checkpoint_path = get_wandb_checkpoint_path(
+                'kwokkenton-individual/mlx-week2-search-engine/towers_mlp:v44',
+            )
+    else:
+        raise ValueError(f'Invalid config: {config}')
+    
+
+
     # Load the model
     checkpoint = torch.load(
         checkpoint_path, map_location=device, weights_only=True,
@@ -35,6 +50,7 @@ def setup_semantics_embedder():
     semantics_embedder = SemanticsEmbedder(
         query_encoder,
         doc_encoder,
+        embeddings,
         device,
     )
     return semantics_embedder
@@ -69,12 +85,12 @@ class SemanticsEmbedder:
 
     def embed_query(self, query: str):
         return self._normalize(
-            self.query_encoder.forward(self.embed_fn(query)),
+            self.query_encoder.forward(self.embed_fn(query).to(self.device)),
         )
 
     def embed_doc(self, doc: str):
         return self._normalize(
-            self.doc_encoder.forward(self.embed_fn(doc)),
+            self.doc_encoder.forward(self.embed_fn(doc).to(self.device)),
         )
 
     @staticmethod

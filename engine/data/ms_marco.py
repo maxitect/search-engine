@@ -4,6 +4,8 @@ import random
 from datasets import load_dataset as hf_load_dataset
 from datasets.dataset_dict import DatasetDict
 from torch.utils.data import Dataset
+import torch
+from torch.nn.utils.rnn import pad_sequence
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -17,12 +19,18 @@ def load_ms_marco() -> DatasetDict:
 class MSMarcoDataset(Dataset):
     def __init__(self, split: str, mode: str, num_negative_samples: int = 10):
         """Dataset for training a retrieval model, giving a query and a list of
-            positive and negative answers. All hard negatives are returned, and
-            a number of other negatives are sampled randomly from the dataset.
+            positive and negative answers. Returns a single positive samples and 
+            a number of negative samples in raw format (strings or list of 
+            strings).
+
+            This is for maximising the flexibility of downstream processing, 
+            which can be done in the dataloader.
 
         Args:
             split (str): The split to load, must be one of "train",
             "validation", or "test".
+            mode (str): The mode to load, must be one of "hard" or "random".
+            num_negative_samples (int): The number of negative samples to load.
 
         Raises:
             ValueError: If the split is not valid.
@@ -68,9 +76,8 @@ class MSMarcoDataset(Dataset):
     
     def _get_entry_item_random(self, idx):
         # Treat all 'passage_texts' as positive answers
-        row = self.ds[idx]
-        query = row['query']
-        positives = row['passages']['passage_text']
+        query = self.ds[idx]['query']
+        positives = self.ds[idx]['passages']['passage_text']
 
         # Randomly select one positive answer
         positive_answer = positives[random.randint(0, len(positives) - 1)]
@@ -146,3 +153,66 @@ class MSMarcoDataset(Dataset):
                 passage_text[random.randint(0, len(passage_text) - 1)],
             )
         return negative_samples
+
+def collate_fn_marco(batch, embed_fn, padding=False) -> tuple[
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+]:
+    """
+    Collates samples from MSMarcoDataset into batches of mean-pooled embeddings.
+
+    Args:
+        batch: A list of tuples of length batch_size, where each tuple is
+            (query: str, pos_docs: list[str], neg_docs: list[str]).
+            Assumes len(pos_docs) == 1.
+        embed_fn: The mean-pooled embedding function.
+        padding (bool): Whether to pad the embeddings sequences to the same length.
+
+    Returns:
+        A tuple of tensors:
+        If padding is False:
+            - batch_q_embedding: (B, D_in)
+            - batch_pos_embedding: (B, D_in)
+            - batch_neg_embeddings: (B, K, D_in)
+
+        If padding is True:
+            - batch_q_embedding: (B, max_len, D_in)
+            - batch_pos_embedding: (B, max_len, D_in)
+            - batch_neg_embeddings: (B, max_len, K, D_in)
+    """
+    batch_size = len(batch)
+
+    # Unzip the batch
+    queries, pos_docs, neg_docs = zip(*batch)
+
+    q_embeddings = [embed_fn(q) for q in queries]
+    p_embeddings = [embed_fn(p) for p in pos_docs]
+
+    if not padding:
+        batch_q_embedding = torch.stack(q_embeddings)
+        batch_pos_embedding = torch.stack(p_embeddings)
+
+        batch_neg_embeddings = []
+        for b_idx in range(batch_size):
+            batch_neg_embeddings.append(
+                torch.stack([embed_fn(n) for n in neg_docs[b_idx]]),
+            )
+        batch_neg_embeddings = torch.stack(batch_neg_embeddings)
+    else:
+        # Pad the embeddings with zeros
+        batch_q_embedding = pad_sequence(q_embeddings, batch_first=True)
+        batch_pos_embedding = pad_sequence(p_embeddings, batch_first=True)
+
+        for b_idx in range(batch_size):
+            neg_embeddings = pad_sequence(
+                [embed_fn(n) for n in neg_docs[b_idx]],
+                batch_first=True,
+            )
+
+            batch_neg_embeddings.append(neg_embeddings)
+
+        batch_neg_embeddings = pad_sequence(batch_neg_embeddings, batch_first=True)
+
+    return batch_q_embedding, batch_pos_embedding, batch_neg_embeddings
+

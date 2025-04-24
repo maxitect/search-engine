@@ -8,13 +8,54 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 import wandb
-from engine.data import MSMarcoDataset
-from engine.model import Encoder, TripletLoss
+from engine.data import MSMarcoDataset, collate_fn_marco
+from engine.model import Encoder, RNNEncoder, TripletLoss
 from engine.text import setup_language_models, MeanPooledWordEmbedder, GensimWord2Vec
 from engine.utils import get_device, get_wandb_checkpoint_path
+import random
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
+
+NUM_WORKERS = 4
+
+def print_validation_results(query: str, 
+                             similarities: torch.Tensor, 
+                             docs_strings: list[str], 
+                             positive_idx: int = 0):
+    """Print validation results in a nice format.
+    
+    Args:
+        query: The search query
+        similarities: Tensor of similarity scores
+        docs_strings: List of document strings
+        positive_idx: Index of the positive document (default 0)
+    """
+    # Convert similarities to list of floats
+    similarities = similarities.cpu().numpy().tolist()
+    
+    # Create a formatted string
+    output = []
+    output.append("=" * 80)
+    output.append(f"Query: {query}")
+    output.append("-" * 80)
+    
+    # Sort documents by similarity
+    sorted_docs = sorted(zip(similarities, docs_strings), key=lambda x: x[0], reverse=True)
+    
+    for i, (sim, doc) in enumerate(sorted_docs):
+        # Mark positive document
+        is_positive = (i == positive_idx)
+        marker = "✅" if is_positive else "  "
+        
+        # Format the output
+        output.append(f"{marker} Similarity: {sim:.4f}")
+        output.append(f"   Document: {doc}")
+        output.append("-" * 80)
+    
+    # Join and print
+    # print("\n".join(output))
+    logger.info("\n".join(output))
 
 def run_sanity_check(
     q_vectors, pos_vectors, neg_vectors,
@@ -89,7 +130,7 @@ class Trainer:
             self.embed_fn = self.gensim_w2v.get_mean_embedding
 
         self.collate_fn = partial(
-            self.collate_fn_marco,
+            collate_fn_marco,
             embed_fn=self.embed_fn,
         )
 
@@ -98,59 +139,15 @@ class Trainer:
             shuffle=True,
             collate_fn=self.collate_fn,
             drop_last=True,
+            num_workers=NUM_WORKERS,
         )
         self.val_dl = DataLoader(
             self.val_ds, batch_size=self.batch_size,
             shuffle=False,
             collate_fn=self.collate_fn,
             drop_last=True,
+            num_workers=NUM_WORKERS,
         )
-
-
-
-    def collate_fn_marco(self, batch, embed_fn) -> tuple[
-        torch.Tensor,
-        torch.Tensor,
-        torch.Tensor,
-    ]:
-        """
-        Collates samples from MSMarcoDataset into batches of mean-pooled embeddings.
-
-        Args:
-            batch: A list of tuples of length batch_size, where each tuple is
-                (query: str, pos_docs: list[str], neg_docs: list[str]).
-                Assumes len(pos_docs) == 1.
-            embed_fn: The embedding function.
-
-        Returns:
-            A tuple of tensors:
-            - batch_q_embedding: (B, D_in)
-            - batch_pos_embedding: (B, D_in)
-            - batch_neg_embeddings: (B, K, D_in)
-        """
-        batch_size = len(batch)
-
-        # Unzip the batch
-        queries, pos_docs, neg_docs = zip(*batch)
-
-        batch_q_embedding = torch.stack([
-            embed_fn(q)
-            for q in queries
-        ])
-
-        batch_pos_embedding = torch.stack([
-            embed_fn(p)
-            for p in pos_docs
-        ])
-
-        batch_neg_embeddings = []
-        for b_idx in range(batch_size):
-            batch_neg_embeddings.append(
-                torch.stack([embed_fn(n) for n in neg_docs[b_idx]]),
-            )
-        batch_neg_embeddings = torch.stack(batch_neg_embeddings)
-
-        return batch_q_embedding, batch_pos_embedding, batch_neg_embeddings
 
     def train_one_epoch(
         self,
@@ -170,23 +167,11 @@ class Trainer:
         for batch_idx, batch in enumerate(tqdm(self.train_dl)):
             # Zero your gradients for every batch!
             optimiser.zero_grad()
-            batch_q_embedding, batch_pos_embedding, batch_neg_embeddings = batch
-            batch_q_embedding = batch_q_embedding.to(self.device)
-            batch_pos_embedding = batch_pos_embedding.to(self.device)
-            batch_neg_embeddings = batch_neg_embeddings.to(self.device)
-
-            # All these have shapes (B, D_out)
-            q_vectors = query_encoder.forward(batch_q_embedding)
-            pos_vectors = doc_encoder.forward(batch_pos_embedding)
-            # Batch compute this, neg_vectors which has shape (B, K, D_out)
-            neg_vectors = doc_encoder.forward(
-                batch_neg_embeddings.view(self.batch_size*self.K, -1),
+            q_vectors, pos_vectors, neg_vectors = self._vectors_from_batch(
+                batch, query_encoder, doc_encoder,
             )
-
-            # Permute to (B, D_out, K) for the triplet loss
-            neg_vectors = neg_vectors.view(self.batch_size, self.K, -1)
-
             # Then do the triplet loss
+            # Permute to (B, D_out, K) for the triplet loss
             loss = loss_fn(
                 q_vectors, pos_vectors,
                 neg_vectors.permute(0, 2, 1),
@@ -201,6 +186,8 @@ class Trainer:
                     q_vectors, pos_vectors, neg_vectors,
                 )
 
+                self.validate_single(query_encoder, doc_encoder)
+
                 # loss per batch
                 last_loss = running_loss / batches_print_frequency
                 logger.info(
@@ -209,6 +196,31 @@ class Trainer:
                 running_loss = 0.
 
         return last_loss, accuracy
+
+    def _vectors_from_batch(
+        self,
+        batch,
+        query_encoder: Encoder,
+        doc_encoder: Encoder,
+    ):  
+        # Allow for variable batch sizes
+        batch_size = len(batch[0])
+
+        batch_q_embedding, batch_pos_embedding, batch_neg_embeddings = batch
+        batch_q_embedding = batch_q_embedding.to(self.device)
+        batch_pos_embedding = batch_pos_embedding.to(self.device)
+        batch_neg_embeddings = batch_neg_embeddings.to(self.device)
+
+        # All these have shapes (batch_size, D_out)
+        q_vectors = query_encoder.forward(batch_q_embedding)
+        pos_vectors = doc_encoder.forward(batch_pos_embedding)
+        # Batch compute this, neg_vectors which has shape (batch_size, K, D_out)
+        neg_vectors = doc_encoder.forward(
+            batch_neg_embeddings.view(batch_size*self.K, -1),
+        )
+        neg_vectors = neg_vectors.view(batch_size, self.K, -1)
+
+        return q_vectors, pos_vectors, neg_vectors
 
     def validate(
         self,
@@ -226,28 +238,13 @@ class Trainer:
         with torch.no_grad():
             for batch_idx, batch in enumerate(tqdm(self.val_dl)):
                 # Zero your gradients for every batch!
-                batch_q_embedding, batch_pos_embedding, batch_neg_embeddings = batch
-                batch_q_embedding = batch_q_embedding.to(self.device)
-                batch_pos_embedding = batch_pos_embedding.to(self.device)
-                batch_neg_embeddings = batch_neg_embeddings.to(self.device)
-
-                # All these have shapes (B, D_out)
-                q_vectors = query_encoder.forward(batch_q_embedding)
-                pos_vectors = doc_encoder.forward(batch_pos_embedding)
-                # Batch compute this, neg_vectors which has shape (B, K, D_out)
-                neg_vectors = doc_encoder.forward(
-                    batch_neg_embeddings.view(self.batch_size*self.K, -1),
+                q_vectors, pos_vectors, neg_vectors = self._vectors_from_batch(
+                    batch, query_encoder, doc_encoder,
                 )
-
-                # Permute to (B, D_out, K) for the triplet loss
-                neg_vectors = neg_vectors.view(self.batch_size, self.K, -1)
-
-                # Then do the triplet loss
                 loss = loss_fn(
                     q_vectors, pos_vectors,
                     neg_vectors.permute(0, 2, 1),
                 )
-
                 accuracy = run_sanity_check(
                     q_vectors, pos_vectors, neg_vectors,
                 )
@@ -255,6 +252,34 @@ class Trainer:
                 losses.append(loss.item())
 
         return sum(losses)/len(losses), sum(accuracies)/len(accuracies)
+    
+    def validate_single(self, 
+                        query_encoder: Encoder, 
+                        doc_encoder: Encoder):
+        # Select random sample from the validation set
+        dataset = self.val_dl.dataset 
+        random_idx = random.randint(0, len(dataset))
+        query, pos_doc, neg_docs = dataset[random_idx]
+
+        # Enforce positive doc is first
+        docs_strings = [pos_doc] + neg_docs
+
+        query_encoder = query_encoder.to(self.device)
+        doc_encoder = doc_encoder.to(self.device)
+
+        with torch.no_grad():
+            # Collate function expects a list of tuples
+            batch = self.collate_fn([(query, pos_doc, neg_docs)])
+            q_vectors, pos_vectors, neg_vectors = self._vectors_from_batch(
+                batch, query_encoder, doc_encoder,
+            )
+            # Compute cosine similarity
+            docs_vectors = torch.cat([pos_vectors, neg_vectors.squeeze()])
+            similarities = torch.cosine_similarity(q_vectors, 
+                                                   docs_vectors, 
+                                                   dim=-1)
+
+            print_validation_results(query, similarities, docs_strings, positive_idx=0)
 
     def train(
         self,
@@ -328,7 +353,7 @@ class Trainer:
 
 if __name__ == '__main__':
     # Training configs
-    batch_size = 4
+    batch_size = 8
     K = 5
     lr = 1e-3
     mode = 'random'
@@ -338,9 +363,11 @@ if __name__ == '__main__':
     # Model configs
     D_hidden = 100
     D_out = 100
+    batches_print_frequency = 200
+    log_to_wandb = False
 
-    log_to_wandb = True
     device = get_device()
+
     trainer = Trainer(
         batch_size,
         num_negative_samples=K,
@@ -352,10 +379,17 @@ if __name__ == '__main__':
 
     D_in = 300
 
-    query_encoder = Encoder(
+    # query_encoder = Encoder(
+    #     input_dim=D_in, hidden_dim=D_hidden, output_dim=D_out,
+    # )
+    # doc_encoder = Encoder(
+    #     input_dim=D_in, hidden_dim=D_hidden, output_dim=D_out,
+    # )
+
+    query_encoder = RNNEncoder(
         input_dim=D_in, hidden_dim=D_hidden, output_dim=D_out,
     )
-    doc_encoder = Encoder(
+    doc_encoder = RNNEncoder(
         input_dim=D_in, hidden_dim=D_hidden, output_dim=D_out,
     )
 
@@ -364,16 +398,16 @@ if __name__ == '__main__':
     )
 
     # Load previously trained model
-    # checkpoint_path = get_wandb_checkpoint_path(
-    #     'kwokkenton-individual/mlx-week2-search-engine/towers_mlp:v19',
-    # )
+    checkpoint_path = get_wandb_checkpoint_path(
+        'kwokkenton-individual/mlx-week2-search-engine/towers_mlp:v39',
+    )
 
-    # # Load the model
-    # checkpoint = torch.load(
-    #     checkpoint_path, map_location=device, weights_only=True,
-    # )
-    # query_encoder.load_state_dict(checkpoint['query_encoder_state_dict'])
-    # doc_encoder.load_state_dict(checkpoint['doc_encoder_state_dict'])
+    # Load the model
+    checkpoint = torch.load(
+        checkpoint_path, map_location=device, weights_only=True,
+    )
+    query_encoder.load_state_dict(checkpoint['query_encoder_state_dict'])
+    doc_encoder.load_state_dict(checkpoint['doc_encoder_state_dict'])
 
     triplet_loss = TripletLoss()
     trainer.train(
@@ -382,5 +416,5 @@ if __name__ == '__main__':
         doc_encoder=doc_encoder,
         triplet_loss=triplet_loss,
         optimiser=optimiser,
-        batches_print_frequency=100,
+        batches_print_frequency=batches_print_frequency,
     )

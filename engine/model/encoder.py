@@ -35,6 +35,11 @@ class RNNEncoder(torch.nn.Module):
         self.input_dim = input_dim
         self.hidden_dim = hidden_dim
         self.output_dim = output_dim  
+
+        self.rnn = torch.nn.LSTM(
+            input_dim, hidden_dim, batch_first=True,
+        )
+        self.fc = torch.nn.Linear(hidden_dim, output_dim)
     
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
@@ -43,4 +48,8 @@ class RNNEncoder(torch.nn.Module):
         Returns:
             output_embedding[B, D_out]
         """ 
-        pass
+        x, _ = self.rnn(x)
+        x = self.fc(x)
+        output_embedding = x
+        return output_embedding
+

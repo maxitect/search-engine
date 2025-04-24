@@ -49,6 +49,15 @@ The paper proposes three types of negatives
 2. BM25
 3. Gold negatives
 
+### Models
+
+Tower MLP Architecture is defined in `Encoder`
+- Input dimensions: 300, Hidden dimension: 100
+- A two layer MLP with ReLU activation that operates on the average pooled documents and queries
+
+RNN Architecture
+- Input dimensions: 300
+
 
 ## Evaluation and Results
 
@@ -58,17 +67,40 @@ Experiments
 
 
 
-| Setup| Training accuracy (%) | Validation accuracy (%) |
-| --| --| --|
-| Tower MLP, hard negatives| 10 | ~10 |
-|Tower MLP, random negatives | 30 | 25 |
+Tower RNN Architecture
+
+| Setup| Last training accuracy (%) | Validation accuracy (%) | Checkpoint | 
+| --| --| --| --| 
+| Tower MLP, hard negatives| 10 | 10 | towers_mlp:v19|
+|Tower MLP, random negatives | 30 | 25 | towers_mlp:v38|
+| Tower MLP, Gensim weights, random negatives | 88 | 84 | towers_mlp:v39 |
+| Tower RNN, Gensim weights, random negatives |  |  | towers_mlp:v39 |
+
 
 A baseline would be random guessing and the baseline accuracy is $1/(N+1)$. For $N = 20$, this is $4.8\%$.
 
 Potential pitfalls
 
 1. Word not included in the tokeniser (not in Wikipedia/ or niche words), this is especially pertinent for acronyms. Example, we had a query called 'what is rba', which turned into '['what', 'is', '<UNK>']' in tokenised form.
+2. Training scheme was doing a rough-search, instead of a hard-search
+3. 
 
+
+### Todo:
+
+Why is training so slow? 
+- I can Precompute all word vectors using the skipgram model and save as a dictionary
+- Profile my app
+- Solved by increasing the number of workers
+
+I'm interested in doing some ablation testing. Is the tower even needed?
+
+### Learnings: 
+
+- Embeddings are everything-- should base your project on stable foundations. preprocess data well first
+- Go end-to-end quickly
+
+Config
 
 ## Deployment
 
@@ -80,7 +112,7 @@ python3 create_db.py
 Running the search engine for the front-end
 
 ```bash
-streamlit run app.py
+streamlit run app.py --server.port 8080
 ```
 
 
@@ -125,15 +157,6 @@ Git setup
 git config --global user.name ""
 git config --global user.email ""
 ```
-
-### Todo:
-
-Precompute all word vectors using the skipgram model and save as a dictionary
-
-Setup your HF tokens
-
-Learnings: preprocess data well first
-
 
 ## References
 
