@@ -25,7 +25,7 @@ def embed_docs(model, vocab, docs, batch_size=64):
     for i in range(0, len(docs), batch_size):
         batch = docs[i:i+batch_size]
         seqs = []
-        if i % (batch_size * 10) == 0:
+        if i % (batch_size * 1000) == 0:
             print(f"Processing batch {i//batch_size}/{total_batches}...")
         for text in batch:
             tokens = preprocess(text)
