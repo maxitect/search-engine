@@ -148,25 +148,29 @@ def get_similar_words(model, word, word2idx, idx2word, top_k=5):
     return similar_words
 
 def train():
-    # Initialize wandb
+    # Set environment variables for better memory management
+    os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
+    
+    # Initialize wandb with reduced batch size and memory optimizations
     wandb.init(project="word2vec-cbow", config={
         "architecture": "CBOW",
         "dataset": "text8+MS-MARCO",
         "embedding_dim": 300,
         "window_size": 5,
-        "batch_size": 4096,
+        "batch_size": 1024,  # Reduced from 4096
         "learning_rate": 0.001,
-        "epochs": 10,
-        "gradient_accumulation_steps": 4
+        "epochs": 5,
+        "gradient_accumulation_steps": 8  # Increased from 4
     })
     
     # Set device
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
     
-    # Enable cuDNN benchmarking for faster training
+    # Enable cuDNN benchmarking and disable deterministic mode for better performance
     if device.type == 'cuda':
         torch.backends.cudnn.benchmark = True
+        torch.backends.cudnn.deterministic = False
     
     # Load and combine datasets
     print("Loading and combining datasets...")
@@ -178,7 +182,7 @@ def train():
     train_data = []
     
     # Process in chunks to manage memory
-    chunk_size = 1000000
+    chunk_size = 500000  # Reduced from 1000000
     for i in tqdm(range(0, len(tokens), chunk_size), desc="Creating training pairs"):
         chunk_end = min(i + chunk_size, len(tokens))
         chunk = tokens[i:chunk_end]
@@ -190,6 +194,8 @@ def train():
         
         # Free memory
         del chunk
+        if device.type == 'cuda':
+            torch.cuda.empty_cache()
     
     print(f"Created {len(train_data)} training pairs")
     
@@ -263,6 +269,10 @@ def train():
                     else:
                         optimizer.step()
                     optimizer.zero_grad()
+                    
+                    # Clear CUDA cache after each optimizer step
+                    if device.type == 'cuda':
+                        torch.cuda.empty_cache()
                 
                 # Update metrics
                 _, predicted = torch.max(outputs.data, 1)
@@ -282,7 +292,7 @@ def train():
                 del outputs
                 
                 # Clear CUDA cache periodically
-                if device.type == 'cuda' and i % 100 == 0:
+                if device.type == 'cuda' and i % 50 == 0:  # More frequent cache clearing
                     torch.cuda.empty_cache()
         
         # Evaluation
@@ -313,6 +323,10 @@ def train():
                 del context_tensor
                 del target_tensor
                 del outputs
+                
+                # Clear CUDA cache periodically during evaluation
+                if device.type == 'cuda' and i % 50 == 0:
+                    torch.cuda.empty_cache()
         
         # Calculate metrics
         train_loss = total_loss / (len(train_set) // batch_size)
