@@ -132,9 +132,9 @@ class CBOW(nn.Module):
         self._init_weights()
     
     def _init_weights(self):
-    """Xavier/Glorot initialization"""
-    nn.init.xavier_uniform_(self.embeddings.weight)
-    nn.init.xavier_uniform_(self.context_embeddings.weight)
+        """Xavier/Glorot initialization"""
+        nn.init.xavier_uniform_(self.embeddings.weight)
+        nn.init.xavier_uniform_(self.context_embeddings.weight)
 
     def forward(self, context, target):
         batch_size = context.size(0)
