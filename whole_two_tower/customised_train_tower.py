@@ -143,63 +143,12 @@ class CustomTwoTowerModel(nn.Module):
                 return self.forward(query, passage)
             raise e
 
-def train_step(model, optimizer, query_batch, pos_passage_batch, neg_passage_batch):
-    try:
-        # Forward pass
-        pos_scores = model(query_batch, pos_passage_batch)
-        neg_scores = model(query_batch, neg_passage_batch)
-        
-        # Check for NaN in scores
-        if torch.isnan(pos_scores).any() or torch.isnan(neg_scores).any():
-            print("Warning: NaN detected in model scores")
-            return float('nan')
-        
-        # Compute loss with numerical stability checks
-        score_diff = pos_scores - neg_scores
-        if torch.isnan(score_diff).any():
-            print("Warning: NaN in score difference")
-            return float('nan')
-            
-        # Clamp score difference to prevent overflow in exp
-        score_diff = torch.clamp(score_diff, min=-100, max=100)
-        
-        # Compute loss
-        loss = -torch.mean(torch.log(torch.sigmoid(score_diff)))
-        
-        if torch.isnan(loss):
-            print("Warning: NaN in loss calculation")
-            return float('nan')
-        
-        # Backward pass
-        optimizer.zero_grad()
-        loss.backward()
-        
-        # Gradient clipping
-        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-        
-        # Check for NaN gradients
-        for name, param in model.named_parameters():
-            if param.grad is not None and torch.isnan(param.grad).any():
-                print(f"Warning: NaN in gradients for {name}")
-                return float('nan')
-        
-        optimizer.step()
-        
-        return loss.item()
-    except RuntimeError as e:
-        if "CUDNN_STATUS_EXECUTION_FAILED" in str(e):
-            # Clear CUDA cache and retry
-            torch.cuda.empty_cache()
-            gc.collect()
-            return train_step(model, optimizer, query_batch, pos_passage_batch, neg_passage_batch)
-        raise e
-
-def evaluate(model, query_batch, passage_batch, labels):
-    with torch.no_grad():
-        scores = model(query_batch, passage_batch)
-        predictions = (scores > 0).float()
-        accuracy = (predictions == labels).float().mean()
-    return accuracy.item()
+def triplet_loss_function(query_emb, pos_doc_emb, neg_doc_emb, margin=0.2):
+    """Compute triplet loss with margin."""
+    pos_scores = torch.sum(query_emb * pos_doc_emb, dim=1)
+    neg_scores = torch.sum(query_emb * neg_doc_emb, dim=1)
+    loss = torch.clamp(neg_scores - pos_scores + margin, min=0.0)
+    return torch.mean(loss)
 
 def train_model(config):
     # Initialize wandb
@@ -237,15 +186,13 @@ def train_model(config):
         else:
             print("Starting fresh training")
     
-    # Create datasets with vocab_size
+    # Create datasets
     train_dataset = CustomMSMARCODataset(config['train_path'], vocab_size=config['vocab_size'])
     val_dataset = CustomMSMARCODataset(config['val_path'], vocab_size=config['vocab_size'])
-    test_dataset = CustomMSMARCODataset(config['test_path'], vocab_size=config['vocab_size'])
     
     # Create data loaders
     train_loader = DataLoader(train_dataset, batch_size=config['batch_size'], shuffle=True)
     val_loader = DataLoader(val_dataset, batch_size=config['batch_size'])
-    test_loader = DataLoader(test_dataset, batch_size=config['batch_size'])
     
     # Initialize model
     model = CustomTwoTowerModel(
@@ -278,6 +225,7 @@ def train_model(config):
         best_epoch = 0
     
     # Training loop
+    patience_counter = 0
     for epoch in range(start_epoch, config['epochs']):
         epoch_start_time = time.time()
         
@@ -289,7 +237,8 @@ def train_model(config):
         batch_count = 0
         nan_batches = 0
         
-        for batch in tqdm(train_loader, desc=f'Epoch {epoch+1}'):
+        progress = tqdm(train_loader, desc=f'Epoch {epoch+1}')
+        for batch in progress:
             try:
                 batch_start_time = time.time()
                 batch_count += 1
@@ -297,20 +246,30 @@ def train_model(config):
                 # Move batch to device
                 query = batch['query'].to(device)
                 pos_passage = batch['passage'].to(device)
+                neg_passage = batch['passage'][torch.randperm(len(batch['passage']))].to(device)
                 
-                # Create negative samples
-                neg_batch = create_negative_samples(batch)
-                neg_passage = neg_batch['passage'].to(device)
+                # Forward pass
+                query_emb = model.query_tower(query)
+                pos_emb = model.passage_tower(pos_passage)
+                neg_emb = model.passage_tower(neg_passage)
                 
-                # Training step
-                loss = train_step(model, optimizer, query, pos_passage, neg_passage)
+                # Compute triplet loss
+                loss = triplet_loss_function(
+                    query_emb, pos_emb, neg_emb, 
+                    margin=config.get('margin', 0.2)
+                )
                 
-                if torch.isnan(torch.tensor(loss)):
+                if torch.isnan(loss):
                     nan_batches += 1
                     print(f"Warning: NaN loss in batch {batch_count}")
                     continue
                 
-                train_losses.append(loss)
+                # Backward pass
+                optimizer.zero_grad()
+                loss.backward()
+                
+                # Gradient clipping
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
                 
                 # Calculate gradient norms
                 total_norm = 0
@@ -320,31 +279,24 @@ def train_model(config):
                         total_norm += param_norm.item() ** 2
                 grad_norms.append(total_norm ** 0.5)
                 
+                optimizer.step()
+                
+                train_losses.append(loss.item())
                 batch_times.append(time.time() - batch_start_time)
                 
-                # Log metrics
+                progress.set_postfix({'loss': loss.item()})
+                
+                # Log batch metrics
                 if batch_count % 100 == 0:
-                    # Get memory usage
-                    if torch.cuda.is_available():
-                        memory_allocated = torch.cuda.memory_allocated() / 1024**2
-                        memory_cached = torch.cuda.memory_reserved() / 1024**2
-                    else:
-                        memory_allocated = psutil.Process().memory_info().rss / 1024**2
-                        memory_cached = 0
-                    
                     wandb.log({
-                        'train/batch_loss': loss,
+                        'train/batch_loss': loss.item(),
                         'train/grad_norm': total_norm ** 0.5,
                         'train/batch_time': time.time() - batch_start_time,
                         'train/learning_rate': optimizer.param_groups[0]['lr'],
                         'train/batch': batch_count,
-                        'train/epoch': epoch + 1,
-                        'train/memory_allocated': memory_allocated,
-                        'train/memory_cached': memory_cached,
-                        'train/nan_batches': nan_batches,
-                        'train/avg_grad_norm': np.mean(grad_norms[-100:]),
-                        'train/avg_batch_time': np.mean(batch_times[-100:])
+                        'train/epoch': epoch + 1
                     })
+                    
             except RuntimeError as e:
                 if "CUDNN_STATUS_EXECUTION_FAILED" in str(e):
                     print(f"CUDA error in batch {batch_count}, retrying...")
@@ -356,70 +308,82 @@ def train_model(config):
         # Validation
         model.eval()
         val_losses = []
-        val_accuracies = []
         val_scores = []
         
-        for batch in val_loader:
-            try:
-                query = batch['query'].to(device)
-                passage = batch['passage'].to(device)
-                is_selected = batch['is_selected'].to(device)
-                
-                with torch.no_grad():
-                    pos_scores = model(query, passage)
-                    neg_scores = model(query, passage[torch.randperm(len(passage))])
+        with torch.no_grad():
+            for batch in val_loader:
+                try:
+                    query = batch['query'].to(device)
+                    pos_passage = batch['passage'].to(device)
+                    neg_passage = batch['passage'][torch.randperm(len(batch['passage']))].to(device)
                     
-                    # Check for NaN in scores
-                    if torch.isnan(pos_scores).any() or torch.isnan(neg_scores).any():
-                        print("Warning: NaN in validation scores")
-                        continue
+                    # Forward pass
+                    query_emb = model.query_tower(query)
+                    pos_emb = model.passage_tower(pos_passage)
+                    neg_emb = model.passage_tower(neg_passage)
                     
-                    score_diff = pos_scores - neg_scores
-                    score_diff = torch.clamp(score_diff, min=-100, max=100)
-                    loss = -torch.mean(torch.log(torch.sigmoid(score_diff)))
+                    # Compute triplet loss
+                    loss = triplet_loss_function(
+                        query_emb, pos_emb, neg_emb,
+                        margin=config.get('margin', 0.2)
+                    )
                     
                     if not torch.isnan(loss):
                         val_losses.append(loss.item())
-                        val_scores.extend(pos_scores.cpu().numpy())
-                
-                accuracy = evaluate(model, query, passage, is_selected)
-                val_accuracies.append(accuracy)
-            except RuntimeError as e:
-                if "CUDNN_STATUS_EXECUTION_FAILED" in str(e):
-                    print("CUDA error in validation, skipping batch...")
-                    torch.cuda.empty_cache()
-                    gc.collect()
-                    continue
-                raise e
+                        val_scores.extend(torch.sum(query_emb * pos_emb, dim=1).cpu().numpy())
+                        
+                except RuntimeError as e:
+                    if "CUDNN_STATUS_EXECUTION_FAILED" in str(e):
+                        print("CUDA error in validation, skipping batch...")
+                        torch.cuda.empty_cache()
+                        gc.collect()
+                        continue
+                    raise e
         
         # Calculate metrics
         avg_val_loss = np.mean(val_losses) if val_losses else float('nan')
-        avg_val_accuracy = np.mean(val_accuracies) if val_accuracies else 0.0
         
         # Update learning rate
         scheduler.step(avg_val_loss)
+        
+        # Save checkpoint
+        checkpoint_path = os.path.join(models_dir, f'Custom_Top_Tower_Epoch_{epoch+1}.pth')
+        torch.save({
+            'epoch': epoch + 1,
+            'model_state_dict': model.state_dict(),
+            'optimizer_state_dict': optimizer.state_dict(),
+            'val_loss': avg_val_loss,
+            'config': config
+        }, checkpoint_path)
         
         # Save best model
         if not np.isnan(avg_val_loss) and avg_val_loss < best_val_loss:
             best_val_loss = avg_val_loss
             best_epoch = epoch + 1
+            patience_counter = 0
             
-            model_path = os.path.join(models_dir, 'Custom_Top_Tower_Epoch.pth')
+            best_model_path = os.path.join(models_dir, 'Custom_Top_Tower_Epoch.pth')
             torch.save({
                 'epoch': best_epoch,
                 'model_state_dict': model.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
                 'val_loss': best_val_loss,
-                'val_accuracy': avg_val_accuracy,
                 'config': config
-            }, model_path)
+            }, best_model_path)
+            
+            # Create wandb artifact for best model
+            best_artifact = wandb.Artifact('custom-two-tower-best', type='model')
+            best_artifact.add_file(best_model_path)
+            wandb.log_artifact(best_artifact)
+            
             print(f"\nNew best model saved at epoch {best_epoch} with validation loss: {best_val_loss:.4f}")
+        else:
+            patience_counter += 1
         
         # Log epoch metrics
         wandb.log({
             'epoch/train_loss': np.mean(train_losses) if train_losses else float('nan'),
             'epoch/val_loss': avg_val_loss,
-            'epoch/val_accuracy': avg_val_accuracy,
             'epoch/time': time.time() - epoch_start_time,
             'epoch/best_val_loss': best_val_loss,
             'epoch/best_epoch': best_epoch,
@@ -434,29 +398,30 @@ def train_model(config):
         print(f'Epoch {epoch+1}:')
         print(f'  Train Loss: {np.mean(train_losses) if train_losses else "nan":.4f}')
         print(f'  Val Loss: {avg_val_loss:.4f}')
-        print(f'  Val Accuracy: {avg_val_accuracy:.4f}')
         print(f'  Best Epoch: {best_epoch} (Val Loss: {best_val_loss:.4f})')
         print(f'  NaN Batches: {nan_batches}')
         print(f'  Learning Rate: {optimizer.param_groups[0]["lr"]:.6f}')
         
-        # Clear CUDA cache after each epoch
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-            gc.collect()
+        # Early stopping
+        if patience_counter >= config.get('patience', 5):
+            print(f'Early stopping triggered after {epoch+1} epochs')
+            break
     
+    print(f'Training completed! Best validation loss: {best_val_loss:.4f}')
     wandb.finish()
 
 if __name__ == '__main__':
     config = {
         'train_path': '/root/search-engine/data/msmarco/train.json',
         'val_path': '/root/search-engine/data/msmarco/val.json',
-        'test_path': '/root/search-engine/data/msmarco/test.json',
-        'vocab_size': 100000,  # Adjust based on your vocabulary size
+        'vocab_size': 100000,
         'embedding_dim': 300,
         'hidden_dim': 256,
         'batch_size': 32,
         'learning_rate': 0.001,
-        'epochs': 10
+        'epochs': 10,
+        'margin': 0.2,
+        'patience': 5
     }
     
     train_model(config)

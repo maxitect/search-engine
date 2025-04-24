@@ -6,3 +6,5 @@ wandb
 tqdm
 pyarrow
 datasets
+transformers
+scikit-learn
