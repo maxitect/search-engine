@@ -20,6 +20,7 @@ class Word2VecDataset(Dataset):
         self.idx2word = idx2word
         self.vocab_size = len(word2idx)
         self.window_size = window_size
+        self.subsample = subsample
         
         # Calculate word frequencies for subsampling
         word_counts = Counter(words)
@@ -38,8 +39,8 @@ class Word2VecDataset(Dataset):
             context_words = words[i-window_size:i] + words[i+1:i+window_size+1]
             if target_word in word2idx and all(c in word2idx for c in context_words):
                 self.pairs.append((
-                    [word2idx[c] for c in context_words],
-                    word2idx[target_word]
+                    torch.tensor([word2idx[c] for c in context_words], dtype=torch.long),
+                    torch.tensor(word2idx[target_word], dtype=torch.long)
                 ))
     
     def subsample_prob(self, word, threshold):
@@ -210,7 +211,8 @@ def train():
         batch_size=wandb.config.batch_size,
         shuffle=True,
         num_workers=4,
-        pin_memory=True
+        pin_memory=True,
+        collate_fn=lambda x: (torch.stack([item[0] for item in x]), torch.stack([item[1] for item in x]))
     )
     
     # Initialize model
@@ -245,14 +247,14 @@ def train():
         start_time = time.time()
         
         for context, target in tqdm(dataloader, desc=f"Epoch {epoch+1}"):
-            # Convert lists to tensors and move to device
-            context_tensor = torch.tensor(context, dtype=torch.long).to(device)
-            target_tensor = torch.tensor(target, dtype=torch.long).to(device)
+            # Move tensors to device
+            context = context.to(device)
+            target = target.to(device)
             
             optimizer.zero_grad()
             
             with autocast():
-                loss = model(context_tensor, target_tensor)
+                loss = model(context, target)
             
             scaler.scale(loss).backward()
             scaler.step(optimizer)
