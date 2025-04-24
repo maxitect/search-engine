@@ -1,16 +1,11 @@
 import collections
 import pickle
-import requests
 import pandas as pd
 
 import src.config as config
 from src.utils.tokenise import create_lookup_tables, preprocess
 
 
-r = requests.get(
-    'https://huggingface.co/datasets/ardMLX/text8/resolve/main/text8')
-with open('text8', 'wb') as f:
-    f.write(r.content)
 with open('text8') as f:
     text8: str = f.read()
 
@@ -26,24 +21,13 @@ with open(config.CORPUS_PATH, 'wb') as f:
     pickle.dump(corpus, f)
 
 # Read all three parquet files and combine into one DataFrame
-test_df = pd.read_parquet("ms_marco_test.parquet")
-train_df = pd.read_parquet("ms_marco_train.parquet")
-validation_df = pd.read_parquet("ms_marco_validation.parquet")
-
-# Combine all three DataFrames
-df = pd.concat([train_df, test_df, validation_df], ignore_index=True)
-
-print(f"Combined DataFrame has {len(df)} rows")
-print(f"DataFrame columns: {df.columns.tolist()}")
+df = pd.read_parquet("ms_marco_docs.parquet")
 
 ms_marco_words = []
-passage_count = 0
-for passages in df.documents:
-    for passage in passages:
-        passage_count += 1
-        ms_marco_words.extend(preprocess(passage))
+for passage in df.values:
+    ms_marco_words.extend(preprocess(passage))
 
-print(f"Extracted {passage_count} passage texts")
+print(f"Extracted {len(df)} passage texts")
 
 # Filter out low frequency words
 word_counts = collections.Counter(ms_marco_words)
