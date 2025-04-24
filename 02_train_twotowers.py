@@ -1,6 +1,5 @@
 import argparse
 import datetime
-import shutil
 import torch
 from torch.utils.data import DataLoader
 import wandb
@@ -9,56 +8,32 @@ import pandas as pd
 from tqdm import tqdm
 import os
 import src.models.twotowers as model
-from src.models.skipgram import SkipGram
 import src.config as config
 from src.dataset import MSMARCOTripletDataset
 from src.evaluate import evaluate_progress
+from src.utils.model_loader import download_model, load_skipgram
 
+dev = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-def main():
-    parser = argparse.ArgumentParser(description='Train SkipGram model')
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description='Download SkipGram model')
     parser.add_argument(
-        '--download_model',
+        '--download_sg',
         action='store_true',
         help='Resume training from last checkpoint'
     )
-    parser.add_argument(
-        '--artifact_version',
-        type=str,
-        default=None,
-        help='Wandb artifact version to resume from (e.g., v4)'
-    )
-    parser.add_argument(
-        '--best_version',
-        type=str,
-        default=None,
-        help='Wandb best version to resume from (e.g., v4)'
-    )
     args = parser.parse_args()
+    # Download model if required
+    download_model(
+        args.download_sg, "skipgram-best", config.SKIPGRAM_CHECKPOINT_DIR
+    )
     # Device configuration
-    dev = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f'Using device: {dev}')
     ts = datetime.datetime.now().strftime('%Y_%m_%d__%H_%M_%S')
 
-    # Download model if required
-    if args.download_model and (args.artifact_version or args.best_version):
-        print(f"Resuming training from artifact {args.artifact_version}")
-
-        api = wandb.Api()
-        artifact = api.artifact(
-            'maxime-downe-founders-and-coders/search-engine/'
-            f'{"model-weights" if args.artifact_version else "skipgram-best"}:'
-            f'{args.artifact_version}')
-        artifact_dir = artifact.download(root=config.SKIPGRAM_CHECKPOINT_DIR)
-        pth_files = [f for f in os.listdir(artifact_dir) if f.endswith('.pth')]
-        original_path = os.path.join(artifact_dir, pth_files[0])
-        custom_path = os.path.join(
-            config.SKIPGRAM_CHECKPOINT_DIR, 'best_model.pth'
-        )
-        shutil.copy(original_path, custom_path)
-
-    # Load vocabulary
+    # Load vocabulary and skipgram model
     vocab_to_int = pickle.load(open(config.VOCAB_TO_ID_PATH, 'rb'))
+    skipgram = load_skipgram(vocab_to_int)
 
     # Load data from parquet files
     train_df = pd.read_parquet('ms_marco_train.parquet')
@@ -96,15 +71,6 @@ def main():
     )
     print(f'Train batch size: {len(train_dataloader)}')
     print(f'Validation batch size: {len(val_dataloader)}')
-
-    # Load pretrained SkipGram model
-    skipgram = SkipGram(len(vocab_to_int), config.EMBEDDING_DIM)
-    skipgram.load_state_dict(torch.load(
-        map_location=dev,
-        f=config.SKIPGRAM_BEST_MODEL_PATH))
-    skipgram.to(dev)
-    skipgram.eval()
-    print(f'Loaded SkipGram model from {config.SKIPGRAM_BEST_MODEL_PATH}')
 
     # Initialize query and document towers
     qry_tower = model.QryTower(
@@ -291,7 +257,3 @@ def main():
 
     print(f'Training completed! Best validation loss: {best_val_loss:.4f}')
     wandb.finish()
-
-
-if __name__ == "__main__":
-    main()
