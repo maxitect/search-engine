@@ -22,7 +22,7 @@ class Config:
     vocab_min_count = 100  # Increased from 50 to reduce vocabulary size
     
     # Model architecture
-    embedding_dim = 100    # Reduced from 200 to save memory
+    embedding_dim = 300    # Reduced from 200 to save memory
     window_size = 5        # Context window size
     negative_samples = 5   # Number of negative samples
     
@@ -36,7 +36,7 @@ class Config:
     device = "cuda" if torch.cuda.is_available() else "cpu"
     
     # Data processing
-    max_words = 20000000   # Limit number of words to process (set to None to use all)
+    max_words = 200000000   # Limit number of words to process (set to None to use all)
     use_msmarco = True     # Set to False to train only on text8 data
 
 def load_text8():
