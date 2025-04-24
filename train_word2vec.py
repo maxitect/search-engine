@@ -28,7 +28,7 @@ class Config:
     negative_samples = 15  # Increased negative samples
     
     # Training
-    batch_size = 2048      # Larger batch size for 4090 GPU
+    batch_size = 10240      # Larger batch size for 4090 GPU
     grad_accumulation = 4  # Gradient accumulation steps
     initial_lr = 0.025     # Standard starting LR for word2vec
     min_lr = 0.0001
