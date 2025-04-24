@@ -169,8 +169,8 @@ def train():
     wandb.init(project="word2vec-cbow-improved", config={
         "embedding_dim": 300,
         "window_size": 8,
-        "batch_size": 2048,
-        "gradient_accumulation_steps": 4,
+        "batch_size": 1024,  # Reduced for CPU training
+        "gradient_accumulation_steps": 8,  # Increased for CPU training
         "min_count": 10,
         "initial_lr": 0.025,
         "min_lr": 0.0001,
@@ -179,13 +179,27 @@ def train():
         "subsample_threshold": 1e-5
     })
     
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Using device: {device}")
+    # Better CUDA initialization handling
+    try:
+        if torch.cuda.is_available():
+            device = torch.device("cuda")
+            torch.cuda.empty_cache()
+            print("CUDA is available. Using GPU for training.")
+        else:
+            device = torch.device("cpu")
+            print("CUDA is not available. Using CPU for training.")
+    except Exception as e:
+        print(f"Error initializing CUDA: {e}")
+        print("Falling back to CPU training.")
+        device = torch.device("cpu")
     
     # Set memory optimization settings
-    torch.backends.cudnn.benchmark = True
-    torch.backends.cudnn.deterministic = False
-    torch.cuda.empty_cache()
+    if device.type == "cuda":
+        torch.backends.cudnn.benchmark = True
+        torch.backends.cudnn.deterministic = False
+    else:
+        # Set CPU-specific optimizations
+        torch.set_num_threads(torch.get_num_threads())
     
     # Load and preprocess data
     print("Loading and preprocessing data...")
@@ -216,8 +230,8 @@ def train():
         dataset,
         batch_size=wandb.config.batch_size,
         shuffle=True,
-        num_workers=4,
-        pin_memory=True,
+        num_workers=0 if device.type == "cpu" else 4,  # Reduce workers for CPU
+        pin_memory=device.type == "cuda",
         collate_fn=lambda x: (torch.stack([item[0] for item in x]), torch.stack([item[1] for item in x]))
     )
     
@@ -234,7 +248,9 @@ def train():
         T_max=wandb.config.epochs,
         eta_min=wandb.config.min_lr
     )
-    scaler = torch.amp.GradScaler('cuda')
+    
+    # Only use GradScaler for CUDA
+    scaler = torch.amp.GradScaler('cuda') if device.type == "cuda" else None
     
     # Test words and analogies
     test_words = ["computer", "technology", "data", "learning", "system"]
@@ -258,30 +274,42 @@ def train():
             context = context.to(device)
             target = target.to(device)
             
-            with torch.amp.autocast('cuda'):
+            if device.type == "cuda":
+                with torch.amp.autocast('cuda'):
+                    loss = model(context, target)
+                    loss = loss / wandb.config.gradient_accumulation_steps
+                
+                scaler.scale(loss).backward()
+                
+                if (batch_idx + 1) % wandb.config.gradient_accumulation_steps == 0:
+                    scaler.step(optimizer)
+                    scaler.update()
+                    optimizer.zero_grad()
+            else:
                 loss = model(context, target)
-                # Scale loss for gradient accumulation
                 loss = loss / wandb.config.gradient_accumulation_steps
+                loss.backward()
+                
+                if (batch_idx + 1) % wandb.config.gradient_accumulation_steps == 0:
+                    optimizer.step()
+                    optimizer.zero_grad()
             
-            scaler.scale(loss).backward()
+            total_loss += loss.item() * wandb.config.gradient_accumulation_steps
             
-            # Step optimizer only after accumulating gradients
-            if (batch_idx + 1) % wandb.config.gradient_accumulation_steps == 0:
+            # Clear cache periodically for CUDA
+            if device.type == "cuda" and batch_idx % 50 == 0:
+                torch.cuda.empty_cache()
+        
+        # Handle remaining gradients
+        if device.type == "cuda":
+            if (batch_idx + 1) % wandb.config.gradient_accumulation_steps != 0:
                 scaler.step(optimizer)
                 scaler.update()
                 optimizer.zero_grad()
-                
-                # Clear cache periodically
-                if batch_idx % 50 == 0:
-                    torch.cuda.empty_cache()
-            
-            total_loss += loss.item() * wandb.config.gradient_accumulation_steps
-        
-        # Handle remaining gradients
-        if (batch_idx + 1) % wandb.config.gradient_accumulation_steps != 0:
-            scaler.step(optimizer)
-            scaler.update()
-            optimizer.zero_grad()
+        else:
+            if (batch_idx + 1) % wandb.config.gradient_accumulation_steps != 0:
+                optimizer.step()
+                optimizer.zero_grad()
         
         scheduler.step()
         
@@ -320,8 +348,9 @@ def train():
         for word, similar in similarity_results.items():
             print(f"Similar to '{word}': {similar}")
         
-        # Clear cache after each epoch
-        torch.cuda.empty_cache()
+        # Clear cache after each epoch for CUDA
+        if device.type == "cuda":
+            torch.cuda.empty_cache()
     
     # Save final embeddings
     final_embeddings = model.get_embeddings().cpu().numpy()
