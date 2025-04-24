@@ -141,7 +141,13 @@ class Word2VecDataset(Dataset):
         return len(self.pairs)
     
     def __getitem__(self, idx):
-        return self.pairs[idx]
+        context, target = self.pairs[idx]
+        
+        # Convert to torch tensors
+        context_tensor = torch.tensor(context, dtype=torch.long)
+        target_tensor = torch.tensor(target, dtype=torch.long)
+        
+        return context_tensor, target_tensor
 
 class CBOW(nn.Module):
     def __init__(self, vocab_size, embedding_dim, negative_samples):
