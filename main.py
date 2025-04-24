@@ -7,6 +7,7 @@ import torch.nn as nn
 import torch.optim as optim
 from tqdm import tqdm
 import os
+import numpy as np
 
 from src.config import Config
 from src.models.word2vec import Word2Vec
@@ -64,7 +65,14 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
     
+    # Check if text8 file exists
+    if not os.path.exists(config.data_path):
+        print(f"Error: text8 file not found at {config.data_path}")
+        print("Please make sure the text8 file is in the data directory")
+        return
+    
     # Load and preprocess data
+    print("Loading text8 data...")
     words = load_text8_data(config.data_path)
     print(f"Total words: {len(words)}")
     
@@ -98,7 +106,6 @@ def main():
     
     # Save embeddings
     embeddings = model.embeddings.weight.data.cpu().numpy()
-    import numpy as np
     np.save(os.path.join(config.output_dir, "embeddings.npy"), embeddings)
     
     # Save vocabulary
