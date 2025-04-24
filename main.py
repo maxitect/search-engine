@@ -35,8 +35,9 @@ def train_model(model: Word2Vec, train_loader: torch.utils.data.DataLoader,
     for epoch in range(config.epochs):
         print(f"\nEpoch {epoch + 1}/{config.epochs}")
         total_loss = 0
+        optimizer.zero_grad()  # Zero gradients at the start of epoch
         
-        for contexts, targets in tqdm(train_loader):
+        for i, (contexts, targets) in enumerate(tqdm(train_loader)):
             # Move to device
             contexts = contexts.to(device)
             targets = targets.to(device)
@@ -45,15 +46,29 @@ def train_model(model: Word2Vec, train_loader: torch.utils.data.DataLoader,
             output = model(contexts)
             loss = criterion(output, targets)
             
-            # Backward pass
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
+            # Scale loss for gradient accumulation
+            loss = loss / config.gradient_accumulation_steps
             
-            total_loss += loss.item()
+            # Backward pass
+            loss.backward()
+            
+            # Step optimizer only after accumulating gradients
+            if (i + 1) % config.gradient_accumulation_steps == 0:
+                optimizer.step()
+                optimizer.zero_grad()
+            
+            total_loss += loss.item() * config.gradient_accumulation_steps
+        
+        # Handle remaining gradients
+        if len(train_loader) % config.gradient_accumulation_steps != 0:
+            optimizer.step()
+            optimizer.zero_grad()
         
         avg_loss = total_loss / len(train_loader)
         print(f"Average loss: {avg_loss:.4f}")
+        
+        # Clear memory
+        torch.cuda.empty_cache()
     
     return model
 

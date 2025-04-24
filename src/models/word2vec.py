@@ -1,36 +1,34 @@
 """
-Word2Vec model implementation with CBOW architecture.
+Simple Word2Vec model implementation.
 """
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from typing import List, Tuple
 
 class Word2Vec(nn.Module):
     """
-    Word2Vec model with Continuous Bag of Words (CBOW) architecture.
-    
-    Args:
-        vocab_size (int): Size of the vocabulary
-        embedding_dim (int): Dimension of word embeddings
+    Simple Word2Vec model with CBOW architecture.
     """
     
     def __init__(self, vocab_size: int, embedding_dim: int):
-        super(Word2Vec, self).__init__()
+        super().__init__()
+        self.vocab_size = vocab_size
+        self.embedding_dim = embedding_dim
         
-        # Embedding layer
-        self.embeddings = nn.Embedding(vocab_size, embedding_dim)
-        
-        # Linear layer for prediction
+        # Use sparse embeddings to save memory
+        self.embeddings = nn.Embedding(vocab_size, embedding_dim, sparse=True)
         self.linear = nn.Linear(embedding_dim, vocab_size)
         
-        # Initialize weights
+        # Initialize weights with smaller values
         self.init_weights()
     
     def init_weights(self):
-        """Initialize weights with uniform distribution."""
-        self.embeddings.weight.data.uniform_(-0.1, 0.1)
-        self.linear.weight.data.uniform_(-0.1, 0.1)
+        """Initialize weights with small random values."""
+        init_range = 0.01  # Smaller initialization range
+        self.embeddings.weight.data.uniform_(-init_range, init_range)
+        self.linear.weight.data.uniform_(-init_range, init_range)
         self.linear.bias.data.zero_()
     
     def forward(self, context: torch.Tensor) -> torch.Tensor:
@@ -38,64 +36,52 @@ class Word2Vec(nn.Module):
         Forward pass of the model.
         
         Args:
-            context (torch.Tensor): Tensor of context word indices
-                                  Shape: (batch_size, 2 * window_size)
+            context (torch.Tensor): Context word indices of shape (batch_size, window_size*2)
         
         Returns:
-            torch.Tensor: Log probabilities for target word prediction
-                         Shape: (batch_size, vocab_size)
+            torch.Tensor: Log probabilities of shape (batch_size, vocab_size)
         """
         # Get embeddings for context words
-        # Shape: (batch_size, 2 * window_size, embedding_dim)
-        embeds = self.embeddings(context)
+        embeds = self.embeddings(context)  # (batch_size, window_size*2, embedding_dim)
         
         # Average the embeddings
-        # Shape: (batch_size, embedding_dim)
-        embeds = embeds.mean(dim=1)
+        avg_embeds = embeds.mean(dim=1)  # (batch_size, embedding_dim)
         
-        # Get output scores
-        # Shape: (batch_size, vocab_size)
-        output = self.linear(embeds)
+        # Project to vocabulary size
+        output = self.linear(avg_embeds)  # (batch_size, vocab_size)
         
-        # Apply log softmax for numerical stability
+        # Apply log softmax
         return F.log_softmax(output, dim=1)
     
-    def get_embedding(self, word_idx: int) -> torch.Tensor:
+    def find_similar_words(self, word_idx: int, word_to_idx: dict, idx_to_word: dict, 
+                          top_k: int = 5) -> List[Tuple[str, float]]:
         """
-        Get embedding for a specific word.
+        Find similar words using cosine similarity.
         
         Args:
-            word_idx (int): Index of the word
-        
-        Returns:
-            torch.Tensor: Word embedding
-        """
-        return self.embeddings(torch.tensor([word_idx]))
-    
-    def find_similar_words(self, word_idx: int, word_to_idx: dict, idx_to_word: dict, top_k: int = 10):
-        """
-        Find most similar words using cosine similarity.
-        
-        Args:
-            word_idx (int): Index of the target word
+            word_idx (int): Index of the word to find similar words for
             word_to_idx (dict): Word to index mapping
             idx_to_word (dict): Index to word mapping
             top_k (int): Number of similar words to return
         
         Returns:
-            list: List of (word, similarity) tuples
+            List[Tuple[str, float]]: List of (word, similarity) tuples
         """
-        # Get the word embedding
-        word_vector = self.get_embedding(word_idx).squeeze()
+        # Get embedding for the word
+        word_embedding = self.embeddings.weight[word_idx].detach()
         
-        # Calculate similarities with all other words
-        similarities = []
-        for idx in range(len(word_to_idx)):
-            if idx != word_idx:
-                other_vector = self.get_embedding(idx).squeeze()
-                sim = F.cosine_similarity(word_vector, other_vector, dim=0)
-                similarities.append((idx_to_word[idx], sim.item()))
+        # Calculate cosine similarities with all words
+        similarities = F.cosine_similarity(
+            word_embedding.unsqueeze(0),
+            self.embeddings.weight,
+            dim=1
+        )
         
-        # Sort by similarity and get top k
-        similarities.sort(key=lambda x: x[1], reverse=True)
-        return similarities[:top_k] 
+        # Get top k similar words (excluding the word itself)
+        top_indices = torch.topk(similarities, top_k + 1)[1][1:]  # Skip the word itself
+        similar_words = [
+            (idx_to_word[idx.item()], similarities[idx].item())
+            for idx in top_indices
+        ]
+        
+        return similar_words 
