@@ -71,7 +71,7 @@ def main():
         df=train_df,
         max_query_len=config.MAX_QUERY_LEN,
         max_doc_len=config.MAX_DOC_LEN,
-        max_neg_samples=5
+        max_samples=config.NUMBER_OF_SAMPLES
     )
     print(f'Train triplet set size: {len(train_dataset)}')
 
@@ -79,7 +79,7 @@ def main():
         df=val_df,
         max_query_len=config.MAX_QUERY_LEN,
         max_doc_len=config.MAX_DOC_LEN,
-        max_neg_samples=5
+        max_samples=config.NUMBER_OF_SAMPLES
     )
     print(f'Validation triplet set size: {len(val_dataset)}')
 
