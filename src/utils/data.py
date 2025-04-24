@@ -48,13 +48,14 @@ def load_text8_data(file_path: str) -> List[str]:
         text = f.read().lower()
     return text.split()
 
-def build_vocabulary(words: List[str], min_freq: int = 5) -> Tuple[List[str], Dict[str, int], Dict[int, str]]:
+def build_vocabulary(words: List[str], min_freq: int = 5, max_vocab_size: int = None) -> Tuple[List[str], Dict[str, int], Dict[int, str]]:
     """
     Build vocabulary from words.
     
     Args:
         words (List[str]): List of words
         min_freq (int): Minimum word frequency
+        max_vocab_size (int, optional): Maximum vocabulary size
     
     Returns:
         Tuple[List[str], Dict[str, int], Dict[int, str]]: 
@@ -67,14 +68,20 @@ def build_vocabulary(words: List[str], min_freq: int = 5) -> Tuple[List[str], Di
     # Count word frequencies
     word_counts = Counter(words)
     
-    # Filter vocabulary
+    # Filter by minimum frequency
     vocab = [word for word, count in word_counts.items() if count >= min_freq]
+    
+    # Sort by frequency and limit vocabulary size
+    vocab = sorted(vocab, key=lambda x: word_counts[x], reverse=True)
+    if max_vocab_size is not None:
+        vocab = vocab[:max_vocab_size]
     
     # Create mappings
     word_to_idx = {word: idx for idx, word in enumerate(vocab)}
     idx_to_word = {idx: word for word, idx in word_to_idx.items()}
     
     print(f"Vocabulary size: {len(vocab)}")
+    print(f"Most common words: {vocab[:10]}")
     return vocab, word_to_idx, idx_to_word
 
 def create_data_loader(words: List[str], word_to_idx: Dict[str, int], 

@@ -8,11 +8,12 @@ from dataclasses import dataclass
 class Config:
     # Data parameters
     window_size: int = 5          # Context window size
-    min_word_freq: int = 5        # Minimum word frequency
-    embedding_dim: int = 100      # Dimension of word embeddings
+    min_word_freq: int = 50       # Increased minimum word frequency to reduce vocabulary size
+    embedding_dim: int = 50       # Reduced embedding dimension
+    max_vocab_size: int = 10000   # Limit vocabulary size
     
     # Training parameters
-    batch_size: int = 128         # Batch size for training
+    batch_size: int = 64          # Reduced batch size
     learning_rate: float = 0.001  # Learning rate
     epochs: int = 5               # Number of training epochs
     

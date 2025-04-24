@@ -77,10 +77,18 @@ def main():
     print(f"Total words: {len(words)}")
     
     # Build vocabulary
-    vocab, word_to_idx, idx_to_word = build_vocabulary(words, config.min_word_freq)
+    vocab, word_to_idx, idx_to_word = build_vocabulary(
+        words, 
+        min_freq=config.min_word_freq,
+        max_vocab_size=config.max_vocab_size
+    )
+    
+    # Filter words to only include vocabulary words
+    filtered_words = [word for word in words if word in word_to_idx]
+    print(f"Words after filtering: {len(filtered_words)}")
     
     # Create data loader
-    train_loader = create_data_loader(words, word_to_idx, config.window_size, config.batch_size)
+    train_loader = create_data_loader(filtered_words, word_to_idx, config.window_size, config.batch_size)
     
     # Create model
     model = Word2Vec(len(vocab), config.embedding_dim).to(device)
