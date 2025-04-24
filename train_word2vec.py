@@ -197,10 +197,10 @@ def train():
         "dataset": "text8+MS-MARCO",
         "embedding_dim": 16,  # Further reduced from 25
         "window_size": 5,
-        "batch_size": 64,     # Further reduced from 128
+        "batch_size": 32,     # Reduced from 64
         "learning_rate": 0.001,
         "epochs": 5,
-        "gradient_accumulation_steps": 128  # Increased from 64
+        "gradient_accumulation_steps": 4  # Added gradient accumulation
     })
     
     # Set device
@@ -222,7 +222,7 @@ def train():
     train_data = []
     
     # Process in chunks to manage memory
-    chunk_size = 25000  # Further reduced from 50000
+    chunk_size = 25000  # Reduced from 50000
     for i in tqdm(range(0, len(tokens), chunk_size), desc="Creating training pairs"):
         chunk_end = min(i + chunk_size, len(tokens))
         chunk = tokens[i:chunk_end]
@@ -281,7 +281,7 @@ def train():
     optimizer = optim.SparseAdam(model.parameters(), lr=wandb.config.learning_rate)
     
     # Initialize gradient scaler for mixed precision training
-    scaler = torch.amp.GradScaler('cuda') if device.type == 'cuda' else None
+    scaler = GradScaler() if device.type == 'cuda' else None
     
     # Training loop
     batch_size = wandb.config.batch_size
@@ -314,7 +314,7 @@ def train():
                 target_tensor = torch.LongTensor(targets).to(device)
                 
                 # Use mixed precision training
-                with torch.amp.autocast('cuda') if device.type == 'cuda' else nullcontext():
+                with autocast() if device.type == 'cuda' else nullcontext():
                     outputs = model(context_tensor)
                     loss = F.cross_entropy(outputs, target_tensor)
                     loss = loss / accumulation_steps
