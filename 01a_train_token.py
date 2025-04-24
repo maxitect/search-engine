@@ -24,7 +24,7 @@ with open(config.CORPUS_PATH, 'wb') as f:
 df = pd.read_parquet("ms_marco_docs.parquet")
 
 ms_marco_words = []
-for passage in df.values:
+for passage in df.values.flatten():
     ms_marco_words.extend(preprocess(passage))
 
 print(f"Extracted {len(df)} passage texts")
