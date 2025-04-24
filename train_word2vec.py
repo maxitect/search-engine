@@ -27,7 +27,7 @@ class Config:
     negative_samples = 5   # Number of negative samples
     
     # Training
-    batch_size = 512       # Significantly reduced to prevent OOM
+    batch_size = 2048       # Significantly reduced to prevent OOM 512
     grad_accumulation = 8  # Accumulate gradients to simulate larger batch
     initial_lr = 0.025
     min_lr = 0.0001
