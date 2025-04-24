@@ -14,3 +14,4 @@ dependencies:
   - wandb=0.19.8
   - tqdm=4.67.1
   - pyarrow=19.0.1
+  - chromadb=1.0.6
