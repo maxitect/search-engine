@@ -8,30 +8,53 @@ import numpy as np
 import os
 import re
 import math
+import random
 from tqdm import tqdm
 
-# Configuration - MODIFIED FOR MEMORY EFFICIENCY
+# Configuration
 class Config:
-    # Data
+    # Data paths
     data_dir = "data"
-    vocab_min_count = 50  # Increased to reduce vocabulary size
-    subsample_threshold = 1e-5
+    text8_path = os.path.join(data_dir, "text8")
+    output_dir = os.path.join(data_dir, "word2vec")
     
-    # Model - REDUCED DIMENSIONS
-    embedding_dim = 200  # Reduced from 300
-    window_size = 3  # Smaller context window
-    negative_samples = 5  # Reduced negative samples
+    # Vocabulary
+    vocab_min_count = 50  # Only keep words appearing ≥50 times
     
-    # Training - SMALLER BATCHES
-    batch_size = 2048  # Reduced from 5000
+    # Model architecture
+    embedding_dim = 200   # Reduced from 300 to save memory
+    window_size = 5       # Context window size
+    negative_samples = 5  # Number of negative samples
+    
+    # Training
+    batch_size = 4096     # Reduced from 65536 to prevent OOM
     initial_lr = 0.025
     min_lr = 0.0001
-    epochs = 5
+    epochs = 10
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
-# Text preprocessing (unchanged)
+def load_text8():
+    """Load and preprocess the text8 dataset"""
+    print("Loading text8 dataset...")
+    with open(Config.text8_path, "r") as f:
+        text = f.read()
+    return preprocess(text)
+
+def load_msmarco():
+    """Load and preprocess MS-MARCO dataset"""
+    print("Loading MS-MARCO dataset...")
+    dataset = load_dataset("ms_marco", "v1.1", split="train")
+    words = []
+    for example in tqdm(dataset, desc="Processing MS-MARCO"):
+        for passage in example['passages']['passage_text']:
+            words.extend(preprocess(passage))
+    return words
+
 def preprocess(text):
+    """Clean and tokenize text"""
     text = text.lower()
+    
+    # Replace special tokens
     special_tokens = {
         '.': ' <PERIOD> ',
         ',': ' <COMMA> ',
@@ -50,11 +73,24 @@ def preprocess(text):
     for k, v in special_tokens.items():
         text = text.replace(k, v)
     
+    # Remove remaining special chars
     text = re.sub(r'[^a-z0-9<>\s]', ' ', text)
-    words = [w for w in text.split() if len(w) > 1 and not w.isdigit()]
+    
+    # Tokenize and filter
+    words = [w for w in text.split() 
+             if len(w) > 1 and not w.isdigit() 
+             and not any(c.isdigit() for c in w)]
+    
     return words
 
-# MODIFIED Dataset class with subsampling
+def build_vocab(words, min_count):
+    """Build vocabulary from words"""
+    word_counts = Counter(words)
+    vocab = [word for word, count in word_counts.items() if count >= min_count]
+    word2idx = {word: idx for idx, word in enumerate(vocab)}
+    idx2word = {idx: word for idx, word in enumerate(vocab)}
+    return vocab, word2idx, idx2word
+
 class Word2VecDataset(Dataset):
     def __init__(self, words, word2idx, window_size):
         self.word2idx = word2idx
@@ -64,11 +100,13 @@ class Word2VecDataset(Dataset):
         self.pairs = self._generate_pairs(words)
         
     def _subsample_prob(self, word):
+        """Calculate subsampling probability"""
         freq = self.word_counts[word] / self.total_words
-        threshold = Config.subsample_threshold
+        threshold = 1e-5
         return (math.sqrt(freq / threshold) + 1) * (threshold / freq)
         
     def _generate_pairs(self, words):
+        """Generate training pairs with subsampling"""
         pairs = []
         for i in range(self.window_size, len(words)-self.window_size):
             target = words[i]
@@ -91,13 +129,11 @@ class Word2VecDataset(Dataset):
     def __getitem__(self, idx):
         return self.pairs[idx]
 
-# MODIFIED CBOW Model with memory optimizations
 class CBOW(nn.Module):
     def __init__(self, vocab_size, embedding_dim, negative_samples):
         super().__init__()
-        # Use float16 to save memory
-        self.embeddings = nn.Embedding(vocab_size, embedding_dim, dtype=torch.float16)
-        self.context_embeddings = nn.Embedding(vocab_size, embedding_dim, dtype=torch.float16)
+        self.embeddings = nn.Embedding(vocab_size, embedding_dim)
+        self.context_embeddings = nn.Embedding(vocab_size, embedding_dim)
         self.vocab_size = vocab_size
         self.negative_samples = negative_samples
         
@@ -107,58 +143,51 @@ class CBOW(nn.Module):
         self.context_embeddings.weight.data.uniform_(-init_range, init_range)
     
     def forward(self, context, target):
-        # Convert to float32 for calculation
-        context = context.float()
-        target = target.float()
-        
         # Positive examples
-        context_vec = self.context_embeddings(context.long()).mean(dim=1)
-        target_vec = self.embeddings(target.long())
+        context_vec = self.context_embeddings(context).mean(dim=1)
+        target_vec = self.embeddings(target)
         pos_score = torch.matmul(target_vec, context_vec.t()).diag().sigmoid().log()
         
         # Negative sampling
         noise = torch.randint(0, self.vocab_size, 
-                             (target.shape[0], self.negative_samples),
-                             device=target.device)
-        noise_vec = self.embeddings(noise.long())
+                            (target.shape[0], self.negative_samples),
+                            device=target.device)
+        noise_vec = self.embeddings(noise)
         neg_score = torch.bmm(noise_vec, context_vec.unsqueeze(2)).sigmoid().log().sum(1)
         
         return -(pos_score + neg_score).mean()
     
     def get_embeddings(self):
-        return ((self.embeddings.weight + self.context_embeddings.weight) / 2).float()
+        return (self.embeddings.weight + self.context_embeddings.weight) / 2
 
-# MODIFIED Training function with memory management
 def train():
-    # Clear GPU cache
-    torch.cuda.empty_cache()
+    # Create output directory
+    os.makedirs(Config.output_dir, exist_ok=True)
     
     # Load and combine datasets
-    print("Loading text8...")
+    print("Loading and preprocessing data...")
     text8_words = load_text8()
-    print(f"Loaded {len(text8_words)} words from text8")
-    
-    print("Loading MS-MARCO...")
     msmarco_words = load_msmarco()
-    print(f"Loaded {len(msmarco_words)} words from MS-MARCO")
-    
     combined_words = text8_words + msmarco_words
-    print(f"Total words: {len(combined_words)}")
     
-    # Build vocabulary with higher min_count
+    print(f"\nDataset stats:")
+    print(f"- text8 words: {len(text8_words):,}")
+    print(f"- MS-MARCO words: {len(msmarco_words):,}")
+    print(f"- Total words: {len(combined_words):,}")
+    
+    # Build vocabulary
     vocab, word2idx, idx2word = build_vocab(combined_words, Config.vocab_min_count)
-    print(f"Vocabulary size: {len(vocab)}")
-    
-    # Free memory
-    del text8_words, msmarco_words
-    torch.cuda.empty_cache()
+    print(f"\nVocabulary size: {len(vocab):,} (min count={Config.vocab_min_count})")
     
     # Create dataset and dataloader
     dataset = Word2VecDataset(combined_words, word2idx, Config.window_size)
-    dataloader = DataLoader(dataset, 
-                          batch_size=Config.batch_size, 
-                          shuffle=True,
-                          pin_memory=True)
+    dataloader = DataLoader(
+        dataset,
+        batch_size=Config.batch_size,
+        shuffle=True,
+        num_workers=4,
+        pin_memory=True
+    )
     
     # Initialize model
     model = CBOW(len(vocab), Config.embedding_dim, Config.negative_samples)
@@ -168,13 +197,13 @@ def train():
     
     # Training loop
     best_loss = float('inf')
-    os.makedirs(os.path.join(Config.data_dir, "word2vec"), exist_ok=True)
+    print("\nStarting training...")
     
     for epoch in range(Config.epochs):
         model.train()
         total_loss = 0
         
-        for context, target in tqdm(dataloader, desc=f"Epoch {epoch+1}"):
+        for context, target in tqdm(dataloader, desc=f"Epoch {epoch+1}/{Config.epochs}"):
             context = context.to(Config.device, non_blocking=True)
             target = target.to(Config.device, non_blocking=True)
             
@@ -184,32 +213,26 @@ def train():
             optimizer.step()
             
             total_loss += loss.item()
-            
-            # Periodic memory cleanup
-            if len(dataloader) > 100 and (i+1) % 100 == 0:
-                torch.cuda.empty_cache()
         
-        scheduler.step()
         avg_loss = total_loss / len(dataloader)
+        scheduler.step()
         
         # Save best model
         if avg_loss < best_loss:
             best_loss = avg_loss
-            # Save in float16 to save space
             torch.save({
                 'model_state_dict': model.state_dict(),
                 'vocab': vocab,
                 'word2idx': word2idx,
                 'idx2word': idx2word,
                 'config': Config.__dict__
-            }, os.path.join(Config.data_dir, "word2vec", "best_model.pt"))
+            }, os.path.join(Config.output_dir, "best_model.pt"))
             
-            # Save embeddings as float16
-            embeddings = model.get_embeddings().half().cpu().numpy()
-            np.save(os.path.join(Config.data_dir, "word2vec", "embeddings.npy"), embeddings)
+            # Save embeddings
+            embeddings = model.get_embeddings().cpu().detach().numpy()
+            np.save(os.path.join(Config.output_dir, "embeddings.npy"), embeddings)
         
         print(f"Epoch {epoch+1}: Loss = {avg_loss:.4f}, LR = {scheduler.get_last_lr()[0]:.6f}")
-        torch.cuda.empty_cache()
 
 if __name__ == "__main__":
     train()
