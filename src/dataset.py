@@ -105,7 +105,8 @@ class MSMARCOTripletDataset(Dataset):
                 selected_set = documents[neg_idx]
                 index = min(len(selected_set) - 1, j)
                 neg_doc = selected_set[index]
-                self.triplets.append((query, pos_docs[pos_indices], neg_doc))
+                self.triplets.append(
+                    (query, pos_docs[pos_indices[j]], neg_doc))
 
         self.max_query_len = max_query_len
         self.max_doc_len = max_doc_len
