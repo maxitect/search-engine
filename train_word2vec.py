@@ -10,7 +10,7 @@ import os
 import re
 import collections
 
-def preprocess(text: str, min_count=5) -> list[str]:
+def preprocess(text: str, min_count=10) -> list[str]:
     """Enhanced text preprocessing for Word2Vec"""
     # Standardize and protect punctuation
     text = text.lower()
@@ -42,6 +42,12 @@ def preprocess(text: str, min_count=5) -> list[str]:
     
     # Split and filter
     words = text.split()
+    
+    # Additional filtering
+    words = [w for w in words if len(w) > 1]  # Remove single characters
+    words = [w for w in words if not w.isdigit()]  # Remove numbers
+    words = [w for w in words if not any(c.isdigit() for c in w)]  # Remove words with numbers
+    
     word_counts = collections.Counter(words)
     
     # Keep only frequent words and protected tokens
@@ -112,9 +118,10 @@ def train():
         "architecture": "CBOW",
         "dataset": "text8+MS-MARCO",
         "embedding_dim": 300,
-        "window_size": 3,
-        "batch_size": 1024,
-        "test_size": 0.1
+        "window_size": 5,
+        "batch_size": 2048,
+        "test_size": 0.1,
+        "min_count": 10
     })
     
     # Create data directory if it doesn't exist
@@ -127,17 +134,17 @@ def train():
     print("Loading and combining datasets...")
     words = get_combined_words()
     
-    # 2. Build vocabulary
+    # 2. Build vocabulary with stricter filtering
     print("Building vocabulary...")
     word_counts = Counter(words)
-    vocab = [word for word, count in word_counts.items() if count >= 5]
+    vocab = [word for word, count in word_counts.items() if count >= 10]
     print(f"Vocabulary size: {len(vocab)}")
     word2idx = {word: idx for idx, word in enumerate(vocab)}
     idx2word = {idx: word for word, idx in word2idx.items()}
     
     # 3. Prepare CBOW training data
     print("Preparing training data...")
-    window_size = 2
+    window_size = 5
     train_data = []
     for i in tqdm(range(window_size, len(words)-window_size), desc="Creating training pairs"):
         context = words[i-window_size:i] + words[i+1:i+window_size+1]
@@ -155,13 +162,13 @@ def train():
     test_set = train_data[split_idx:]
     
     # 4. Initialize model
-    model = CBOW(len(vocab)).to(device)
+    model = CBOW(len(vocab), embedding_dim=300)
     optimizer = optim.Adam(model.parameters(), lr=0.001)
     criterion = nn.CrossEntropyLoss()
     
     # 5. Training loop with progress bar
-    batch_size = 1024
-    num_epochs = 5
+    batch_size = 2048
+    num_epochs = 10
     
     for epoch in range(num_epochs):
         model.train()
