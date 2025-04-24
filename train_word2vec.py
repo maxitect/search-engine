@@ -23,16 +23,17 @@ class Config:
     vocab_min_count = 100  # Only keep frequent words
     
     # Model architecture
-    embedding_dim = 300    # Increased embedding dimension
+    embedding_dim = 300    # Embedding dimension
     window_size = 5        # Context window size
-    negative_samples = 15  # Increased negative samples
+    negative_samples = 15  # Number of negative samples
     
     # Training
-    batch_size = 10240      # Larger batch size for 4090 GPU
+    batch_size = 4096      # Reduced batch size for better gradient quality
     grad_accumulation = 4  # Gradient accumulation steps
-    initial_lr = 0.025     # Standard starting LR for word2vec
-    min_lr = 0.05
-    epochs = 5            # Increased epochs
+    initial_lr = 0.05      # Increased learning rate
+    min_lr = 0.0001        # Minimum learning rate (should be lower than initial)
+    epochs = 20            # Increased epochs for better convergence
+    patience = 3           # Early stopping patience
     use_mixed_precision = True
     weight_decay = 1e-5    # Small weight decay
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -97,7 +98,7 @@ class Word2VecDataset(Dataset):
         self.pairs = self._generate_pairs(words)
         
     def _subsample_prob(self, word):
-        """Calculate subsampling probability"""
+        """Calculate subsampling probability for discarding frequent words"""
         freq = self.word_counts[word] / self.total_words
         threshold = 1e-5
         return 1.0 - math.sqrt(threshold / freq) if freq > threshold else 1.0
@@ -107,11 +108,21 @@ class Word2VecDataset(Dataset):
         pairs = []
         for i in range(self.window_size, len(words)-self.window_size):
             target = words[i]
+            if target not in self.word2idx:
+                continue
+                
+            # Decide whether to keep this word based on frequency
             if random.random() > self._subsample_prob(target):
                 continue
+                
+            # Get context words
             context = words[i-self.window_size:i] + words[i+1:i+self.window_size+1]
-            if target in self.word2idx and all(c in self.word2idx for c in context):
-                pairs.append(([self.word2idx[c] for c in context], self.word2idx[target]))
+            valid_context = [c for c in context if c in self.word2idx]
+            
+            if len(valid_context) > 0:
+                pairs.append(([self.word2idx[c] for c in valid_context], self.word2idx[target]))
+                
+        print(f"Generated {len(pairs):,} training pairs")
         return pairs
     
     def __len__(self):
@@ -119,6 +130,9 @@ class Word2VecDataset(Dataset):
     
     def __getitem__(self, idx):
         context, target = self.pairs[idx]
+        # Ensure consistent context length by padding or truncating
+        context = context[:2*self.window_size]  # Truncate if too long
+        context = context + [0] * (2*self.window_size - len(context))  # Pad if too short
         return torch.tensor(context, dtype=torch.long), torch.tensor(target, dtype=torch.long)
 
 class CBOW(nn.Module):
@@ -135,7 +149,7 @@ class CBOW(nn.Module):
         """Xavier/Glorot initialization"""
         nn.init.xavier_uniform_(self.embeddings.weight)
         nn.init.xavier_uniform_(self.context_embeddings.weight)
-
+    
     def forward(self, context, target):
         batch_size = context.size(0)
         
@@ -161,14 +175,65 @@ class CBOW(nn.Module):
         
         return -(pos_loss + neg_loss).mean()
     
+    def get_word_embeddings(self):
+        """Get input embeddings for similarity tasks"""
+        return self.embeddings.weight
+        
+    def get_context_embeddings(self):
+        """Get context embeddings"""
+        return self.context_embeddings.weight
+    
     def get_embeddings(self):
         """Average of input and output embeddings"""
         return (self.embeddings.weight + self.context_embeddings.weight) / 2
+
+def evaluate_analogies(model, word2idx, idx2word):
+    """Evaluate on word analogies (king - man + woman = queen)"""
+    analogies = [
+        ("king", "man", "woman", "queen"),
+        ("paris", "france", "italy", "rome"),
+        ("quick", "quickly", "slow", "slowly"),
+        ("man", "woman", "boy", "girl"),
+        ("good", "better", "bad", "worse"),
+        ("buy", "bought", "sell", "sold")
+    ]
+    
+    results = []
+    for a, b, c, expected in analogies:
+        if a in word2idx and b in word2idx and c in word2idx:
+            a_vec = model.get_embeddings()[word2idx[a]]
+            b_vec = model.get_embeddings()[word2idx[b]]
+            c_vec = model.get_embeddings()[word2idx[c]]
+            
+            # a - b + c should be close to expected
+            result_vec = a_vec - b_vec + c_vec
+            
+            # Find closest word
+            sims = torch.cosine_similarity(result_vec.unsqueeze(0), model.get_embeddings(), dim=1)
+            top_k = torch.topk(sims, k=5)[1]
+            closest_words = [idx2word[idx.item()] for idx in top_k if idx.item() != word2idx[a] and idx.item() != word2idx[b] and idx.item() != word2idx[c]]
+            results.append((a, b, c, expected, closest_words[:3]))
+    
+    # Print results
+    print("\nAnalogy evaluation:")
+    correct = 0
+    for a, b, c, expected, predictions in results:
+        is_correct = expected in predictions
+        if is_correct:
+            correct += 1
+        print(f"{a} - {b} + {c} = {expected}: {predictions} {'✓' if is_correct else '✗'}")
+    
+    if results:
+        print(f"Accuracy: {correct/len(results):.2f}")
+    
+    return results
 
 def train():
     # Setup
     os.makedirs(Config.output_dir, exist_ok=True)
     torch.manual_seed(42)
+    np.random.seed(42)
+    random.seed(42)
     
     # Load data
     print("Loading and preprocessing data...")
@@ -216,6 +281,7 @@ def train():
     
     # Training loop
     best_loss = float('inf')
+    epochs_without_improvement = 0
     print(f"\nStarting training on {Config.device.upper()}...")
     print(f"Using mixed precision: {Config.use_mixed_precision and Config.device == 'cuda'}")
     print(f"Gradient accumulation steps: {Config.grad_accumulation}")
@@ -262,6 +328,7 @@ def train():
         # Save best model
         if avg_loss < best_loss:
             best_loss = avg_loss
+            epochs_without_improvement = 0
             torch.save({
                 'model_state_dict': model.state_dict(),
                 'vocab': vocab,
@@ -271,26 +338,64 @@ def train():
             }, os.path.join(Config.output_dir, "best_model.pt"))
             
             # Save embeddings
-            embeddings = model.get_embeddings().cpu().detach().numpy()
-            np.save(os.path.join(Config.output_dir, "embeddings.npy"), embeddings)
+            for emb_type in ["input", "context", "combined"]:
+                if emb_type == "input":
+                    embeddings = model.get_word_embeddings().cpu().detach().numpy()
+                    np.save(os.path.join(Config.output_dir, "word_embeddings.npy"), embeddings)
+                elif emb_type == "context":
+                    embeddings = model.get_context_embeddings().cpu().detach().numpy()
+                    np.save(os.path.join(Config.output_dir, "context_embeddings.npy"), embeddings)
+                else:
+                    embeddings = model.get_embeddings().cpu().detach().numpy()
+                    np.save(os.path.join(Config.output_dir, "combined_embeddings.npy"), embeddings)
+        else:
+            epochs_without_improvement += 1
+            if epochs_without_improvement >= Config.patience:
+                print(f"No improvement for {Config.patience} epochs. Stopping early.")
+                break
         
         print(f"Epoch {epoch+1}: Loss = {avg_loss:.4f}, LR = {optimizer.param_groups[0]['lr']:.6f}")
         
-        # Validation checks
-        if epoch % 5 == 0 or epoch == Config.epochs - 1:
-            with torch.no_grad():
-                test_words = ["computer", "data", "learning", "algorithm", "network"]
-                print("\nWord similarities:")
-                for word in test_words:
-                    if word in word2idx:
-                        vec = model.get_embeddings()[word2idx[word]]
-                        sims = torch.cosine_similarity(vec, model.get_embeddings(), dim=1)
-                        top_k = torch.topk(sims, k=6)[1][1:]  # Exclude self
-                        similar_words = [idx2word[idx.item()] for idx in top_k]
-                        print(f"'{word}': {similar_words}")
-                    else:
-                        print(f"'{word}' not in vocabulary.")
-                print()
+        # Validation checks - do this every epoch
+        with torch.no_grad():
+            # Word similarities using input embeddings (usually better for similarity)
+            test_words = ["computer", "data", "learning", "algorithm", "network"]
+            print("\nWord similarities (input embeddings):")
+            for word in test_words:
+                if word in word2idx:
+                    vec = model.get_word_embeddings()[word2idx[word]]
+                    sims = torch.cosine_similarity(vec.unsqueeze(0), model.get_word_embeddings(), dim=1)
+                    top_k = torch.topk(sims, k=6)[1][1:]  # Exclude self
+                    similar_words = [idx2word[idx.item()] for idx in top_k]
+                    print(f"'{word}': {similar_words}")
+                else:
+                    print(f"'{word}' not in vocabulary.")
+            
+            # Word analogies using combined embeddings
+            if epoch % 5 == 0 or epoch == Config.epochs - 1:
+                evaluate_analogies(model, word2idx, idx2word)
+                
+    print("\nTraining complete!")
+    print(f"Best loss: {best_loss:.4f}")
+    
+    # Final evaluation
+    print("\nFinal word similarities (input embeddings):")
+    with torch.no_grad():
+        model.eval()
+        test_words = ["computer", "data", "learning", "algorithm", "network", 
+                    "king", "woman", "city", "money", "food"]
+        for word in test_words:
+            if word in word2idx:
+                vec = model.get_word_embeddings()[word2idx[word]]
+                sims = torch.cosine_similarity(vec.unsqueeze(0), model.get_word_embeddings(), dim=1)
+                top_k = torch.topk(sims, k=6)[1][1:]  # Exclude self
+                similar_words = [idx2word[idx.item()] for idx in top_k]
+                print(f"'{word}': {similar_words}")
+            else:
+                print(f"'{word}' not in vocabulary.")
+                
+        # Final analogy evaluation
+        evaluate_analogies(model, word2idx, idx2word)
 
 if __name__ == "__main__":
     train()
