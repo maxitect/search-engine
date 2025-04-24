@@ -245,13 +245,14 @@ def train():
         start_time = time.time()
         
         for context, target in tqdm(dataloader, desc=f"Epoch {epoch+1}"):
-            context = context.to(device)
-            target = target.to(device)
+            # Convert lists to tensors and move to device
+            context_tensor = torch.tensor(context, dtype=torch.long).to(device)
+            target_tensor = torch.tensor(target, dtype=torch.long).to(device)
             
             optimizer.zero_grad()
             
             with autocast():
-                loss = model(context, target)
+                loss = model(context_tensor, target_tensor)
             
             scaler.scale(loss).backward()
             scaler.step(optimizer)
