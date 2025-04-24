@@ -150,17 +150,18 @@ def get_similar_words(model, word, word2idx, idx2word, top_k=5):
 def train():
     # Set environment variables for better memory management
     os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
+    os.environ['CUDA_LAUNCH_BLOCKING'] = '1'  # For better error reporting
     
-    # Initialize wandb with reduced batch size and memory optimizations
+    # Initialize wandb with reduced memory footprint
     wandb.init(project="word2vec-cbow", config={
         "architecture": "CBOW",
         "dataset": "text8+MS-MARCO",
-        "embedding_dim": 300,
+        "embedding_dim": 100,  # Reduced from 300
         "window_size": 5,
-        "batch_size": 1024,  # Reduced from 4096
+        "batch_size": 512,    # Further reduced from 1024
         "learning_rate": 0.001,
         "epochs": 5,
-        "gradient_accumulation_steps": 8  # Increased from 4
+        "gradient_accumulation_steps": 16  # Increased from 8
     })
     
     # Set device
@@ -182,7 +183,7 @@ def train():
     train_data = []
     
     # Process in chunks to manage memory
-    chunk_size = 500000  # Reduced from 1000000
+    chunk_size = 250000  # Further reduced from 500000
     for i in tqdm(range(0, len(tokens), chunk_size), desc="Creating training pairs"):
         chunk_end = min(i + chunk_size, len(tokens))
         chunk = tokens[i:chunk_end]
@@ -212,8 +213,24 @@ def train():
     del train_data
     del tokens
     
-    # Initialize model and optimizer
-    model = CBOW(len(word2idx), embedding_dim=wandb.config.embedding_dim).to(device)
+    # Initialize model with memory-efficient settings
+    vocab_size = len(word2idx)
+    embedding_dim = wandb.config.embedding_dim
+    
+    # Clear CUDA cache before model initialization
+    if device.type == 'cuda':
+        torch.cuda.empty_cache()
+    
+    # Initialize model with reduced precision
+    model = CBOW(vocab_size, embedding_dim=embedding_dim)
+    
+    # Move model to device in chunks to manage memory
+    if device.type == 'cuda':
+        model = model.to(device)
+        # Set model to use less memory
+        model.embeddings.weight.data = model.embeddings.weight.data.half()  # Use half precision
+        model.linear.weight.data = model.linear.weight.data.half()
+    
     optimizer = optim.Adam(model.parameters(), lr=wandb.config.learning_rate)
     
     # Initialize gradient scaler for mixed precision training
@@ -292,7 +309,7 @@ def train():
                 del outputs
                 
                 # Clear CUDA cache periodically
-                if device.type == 'cuda' and i % 50 == 0:  # More frequent cache clearing
+                if device.type == 'cuda' and i % 25 == 0:  # More frequent cache clearing
                     torch.cuda.empty_cache()
         
         # Evaluation
