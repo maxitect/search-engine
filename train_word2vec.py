@@ -266,7 +266,10 @@ def train():
                         vec = model.get_embeddings()[word2idx[word]]
                         sims = torch.cosine_similarity(vec, model.get_embeddings(), dim=1)
                         top_k = torch.topk(sims, k=6)[1][1:]  # Exclude self
-                        print(f"Similar to '{word}': {[idx2word[i.item()] for i in top_k]}")
+                         similar_words = [idx2word[idx] for idx in top_k if idx != word2idx[word]]
+                        print(f"Top similar words to '{word}': {similar_words}")
+                    else:
+                        print(f"'{word}' not in vocabulary.")
 
 if __name__ == "__main__":
     train()
