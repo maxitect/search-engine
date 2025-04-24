@@ -398,7 +398,7 @@ if __name__ == '__main__':
     # Training configs
     batch_size = 8
     K = 5
-    lr = 1e-3
+    lr = 1e-4
     mode = 'random'
     # embeddings = 'self-trained'
     embeddings = 'word2vec-google-news-300'
@@ -407,7 +407,7 @@ if __name__ == '__main__':
     D_in = 300
     D_hidden = 200
     D_out = 100
-    batches_print_frequency = 200
+    batches_print_frequency = 1000
     log_to_wandb = True
 
     device = get_device()
@@ -443,17 +443,17 @@ if __name__ == '__main__':
         list(query_encoder.parameters()) + list(doc_encoder.parameters()), lr=lr,
     )
 
-    # # Load previously trained model
-    # checkpoint_path = get_wandb_checkpoint_path(
-    #     'kwokkenton-individual/mlx-week2-search-engine/towers_mlp:v49',
-    # )
+    # Load previously trained model
+    checkpoint_path = get_wandb_checkpoint_path(
+        'kwokkenton-individual/mlx-week2-search-engine/towers_rnn:latest',
+    )
 
-    # # Load the model
-    # checkpoint = torch.load(
-    #     checkpoint_path, map_location=device, weights_only=True,
-    # )
-    # query_encoder.load_state_dict(checkpoint['query_encoder_state_dict'])
-    # doc_encoder.load_state_dict(checkpoint['doc_encoder_state_dict'])
+    # Load the model
+    checkpoint = torch.load(
+        checkpoint_path, map_location=device, weights_only=True,
+    )
+    query_encoder.load_state_dict(checkpoint['query_encoder_state_dict'])
+    doc_encoder.load_state_dict(checkpoint['doc_encoder_state_dict'])
 
     triplet_loss = TripletLoss()
     trainer.train(
