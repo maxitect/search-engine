@@ -12,7 +12,7 @@ def load_docs(path):
     """Load passages from a parquet file and return a list of strings."""
     df = pd.read_parquet(path)
     # assume single-column dataframe of texts
-    return df.values.flatten()
+    return df.values.flatten().tolist()
 
 
 def embed_docs(model, vocab, docs, batch_size=64):
@@ -20,10 +20,13 @@ def embed_docs(model, vocab, docs, batch_size=64):
     # Determine the device the model is on
     device = next(model.parameters()).device
     embs = []
-
+    total_batches = (len(docs) + batch_size - 1) // batch_size
+    print(f"Processing {len(docs)} documents in {total_batches} batches...")
     for i in range(0, len(docs), batch_size):
         batch = docs[i:i+batch_size]
         seqs = []
+        if i % (batch_size * 10) == 0:
+            print(f"Processing batch {i//batch_size}/{total_batches}...")
         for text in batch:
             tokens = preprocess(text)
             ids = [vocab.get(tok, 0) for tok in tokens[:config.MAX_DOC_LEN]]
@@ -47,11 +50,31 @@ def embed_docs(model, vocab, docs, batch_size=64):
 
 
 def index_to_chroma(docs, embs, collection_name='ms_marco_docs'):
-    """Create or get a ChromaDB collection & add documents with embeddings."""
+    """Create/get a Chroma collection & add documents with embs in batches."""
     client = Client()
     coll = client.get_or_create_collection(name=collection_name)
-    ids = [str(i) for i in range(len(docs))]
-    coll.add(ids=ids, embeddings=embs, documents=docs)
+
+    # ChromaDB's max batch size is 5461 (from error message)
+    batch_size = 5000  # Setting slightly below limit to be safe
+
+    total_batches = (len(docs) + batch_size - 1) // batch_size
+    print(f"Adding {len(docs)} documents in {total_batches} batches")
+
+    for i in range(0, len(docs), batch_size):
+        batch_end = min(i + batch_size, len(docs))
+        batch_docs = docs[i:batch_end]
+        batch_embs = embs[i:batch_end]
+        batch_ids = [str(j) for j in range(i, batch_end)]
+
+        print(
+            f"Adding batch {i//batch_size + 1}/{total_batches} "
+            f"({len(batch_docs)} documents)")
+        coll.add(ids=batch_ids, embeddings=batch_embs, documents=batch_docs)
+
+    print(
+        f"Successfully added all {len(docs)} documents to ChromaDB collection "
+        f"'{collection_name}'")
+    return coll
 
 
 def build_chroma(
