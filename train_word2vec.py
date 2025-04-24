@@ -110,17 +110,23 @@ def combine_datasets():
     return tokens, word2idx, idx2word
 
 class CBOW(nn.Module):
-    def __init__(self, vocab_size, embedding_dim=300):
+    def __init__(self, vocab_size, embedding_dim=100):
         super().__init__()
         self.embeddings = nn.Embedding(vocab_size, embedding_dim)
         self.linear = nn.Linear(embedding_dim, vocab_size)
         
-        # Initialize weights
-        self.embeddings.weight.data.uniform_(-0.5 / embedding_dim, 0.5 / embedding_dim)
-        self.linear.weight.data.uniform_(-0.5 / embedding_dim, 0.5 / embedding_dim)
+        # Initialize weights with smaller values
+        self.embeddings.weight.data.uniform_(-0.1 / embedding_dim, 0.1 / embedding_dim)
+        self.linear.weight.data.uniform_(-0.1 / embedding_dim, 0.1 / embedding_dim)
         self.linear.bias.data.zero_()
         
     def forward(self, context):
+        # Use gradient checkpointing for memory efficiency
+        if self.training:
+            return torch.utils.checkpoint.checkpoint(self._forward, context)
+        return self._forward(context)
+        
+    def _forward(self, context):
         # context shape: (batch_size, window_size*2)
         embeds = self.embeddings(context)  # (batch_size, window_size*2, embedding_dim)
         embeds = embeds.mean(dim=1)        # (batch_size, embedding_dim)
@@ -150,25 +156,25 @@ def get_similar_words(model, word, word2idx, idx2word, top_k=5):
 def train():
     # Set environment variables for better memory management
     os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
-    os.environ['CUDA_LAUNCH_BLOCKING'] = '1'  # For better error reporting
+    os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
     
-    # Initialize wandb with reduced memory footprint
+    # Initialize wandb with minimal memory footprint
     wandb.init(project="word2vec-cbow", config={
         "architecture": "CBOW",
         "dataset": "text8+MS-MARCO",
-        "embedding_dim": 100,  # Reduced from 300
+        "embedding_dim": 50,  # Further reduced from 100
         "window_size": 5,
-        "batch_size": 512,    # Further reduced from 1024
+        "batch_size": 256,    # Further reduced from 512
         "learning_rate": 0.001,
         "epochs": 5,
-        "gradient_accumulation_steps": 16  # Increased from 8
+        "gradient_accumulation_steps": 32  # Increased from 16
     })
     
     # Set device
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
     
-    # Enable cuDNN benchmarking and disable deterministic mode for better performance
+    # Enable cuDNN benchmarking and disable deterministic mode
     if device.type == 'cuda':
         torch.backends.cudnn.benchmark = True
         torch.backends.cudnn.deterministic = False
@@ -183,7 +189,7 @@ def train():
     train_data = []
     
     # Process in chunks to manage memory
-    chunk_size = 250000  # Further reduced from 500000
+    chunk_size = 100000  # Further reduced from 250000
     for i in tqdm(range(0, len(tokens), chunk_size), desc="Creating training pairs"):
         chunk_end = min(i + chunk_size, len(tokens))
         chunk = tokens[i:chunk_end]
@@ -213,7 +219,7 @@ def train():
     del train_data
     del tokens
     
-    # Initialize model with memory-efficient settings
+    # Initialize model with minimal memory footprint
     vocab_size = len(word2idx)
     embedding_dim = wandb.config.embedding_dim
     
@@ -221,15 +227,21 @@ def train():
     if device.type == 'cuda':
         torch.cuda.empty_cache()
     
-    # Initialize model with reduced precision
+    # Initialize model with minimal memory
     model = CBOW(vocab_size, embedding_dim=embedding_dim)
     
-    # Move model to device in chunks to manage memory
+    # Move model to device with memory optimization
     if device.type == 'cuda':
-        model = model.to(device)
-        # Set model to use less memory
-        model.embeddings.weight.data = model.embeddings.weight.data.half()  # Use half precision
-        model.linear.weight.data = model.linear.weight.data.half()
+        # Move embeddings first
+        model.embeddings = model.embeddings.to(device)
+        torch.cuda.empty_cache()
+        
+        # Move linear layer
+        model.linear = model.linear.to(device)
+        torch.cuda.empty_cache()
+        
+        # Convert to half precision
+        model = model.half()
     
     optimizer = optim.Adam(model.parameters(), lr=wandb.config.learning_rate)
     
@@ -255,7 +267,7 @@ def train():
         np.random.shuffle(train_set)
         
         with tqdm(range(0, len(train_set), batch_size), desc=f"Epoch {epoch+1}/{num_epochs}") as pbar:
-            optimizer.zero_grad()  # Zero gradients at the start of epoch
+            optimizer.zero_grad()
             
             for i in pbar:
                 batch = train_set[i:i+batch_size]
@@ -270,7 +282,7 @@ def train():
                 with torch.amp.autocast('cuda') if device.type == 'cuda' else nullcontext():
                     outputs = model(context_tensor)
                     loss = F.cross_entropy(outputs, target_tensor)
-                    loss = loss / accumulation_steps  # Scale loss for gradient accumulation
+                    loss = loss / accumulation_steps
                 
                 # Scale gradients and optimize
                 if scaler is not None:
@@ -295,7 +307,7 @@ def train():
                 _, predicted = torch.max(outputs.data, 1)
                 total += target_tensor.size(0)
                 correct += (predicted == target_tensor).sum().item()
-                total_loss += loss.item() * accumulation_steps  # Scale back the loss
+                total_loss += loss.item() * accumulation_steps
                 
                 # Update progress bar
                 pbar.set_postfix({
@@ -308,8 +320,8 @@ def train():
                 del target_tensor
                 del outputs
                 
-                # Clear CUDA cache periodically
-                if device.type == 'cuda' and i % 25 == 0:  # More frequent cache clearing
+                # Clear CUDA cache more frequently
+                if device.type == 'cuda' and i % 10 == 0:
                     torch.cuda.empty_cache()
         
         # Evaluation
