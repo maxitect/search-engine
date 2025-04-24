@@ -19,7 +19,7 @@ class Config:
     output_dir = os.path.join(data_dir, "word2vec")
     
     # Vocabulary
-    vocab_min_count = 100  # Only keep frequent words
+    vocab_min_count = 5  # Only keep frequent words
     
     # Model architecture
     embedding_dim = 200    # Reduced from 300 for memory
@@ -27,31 +27,27 @@ class Config:
     negative_samples = 5   # Number of negative samples
     
     # Training
-    batch_size = 2048      # Reduced to prevent OOM
-    grad_accumulation = 4  # Gradient accumulation steps
+    batch_size = 1024      # Reduced to prevent OOM
+    grad_accumulation = 8  # Gradient accumulation steps
     initial_lr = 0.01      # Reduced learning rate
     min_lr = 0.0001
-    epochs = 20            # Increased epochs
+    epochs = 10            # Increased epochs
     use_mixed_precision = True
     device = "cuda" if torch.cuda.is_available() else "cpu"
     
     # Data processing
-    max_words = 20000000   # Limit words to process
+    max_words = None   # Limit words to process
     use_msmarco = True     # Whether to use MS-MARCO
 
 def load_text8():
-    """Load and preprocess the text8 dataset"""
+    """Load full text8 dataset without limits"""
     print("Loading text8 dataset...")
     with open(Config.text8_path, "r") as f:
         text = f.read()
-    words = preprocess(text)
-    if Config.max_words:
-        words = words[:Config.max_words // 2]
-        print(f"Limited text8 words to {len(words):,}")
-    return words
+    return preprocess(text)  # Return all words without limiting
 
 def load_msmarco():
-    """Load and preprocess MS-MARCO dataset"""
+    """Load full MS-MARCO dataset without limits"""
     if not Config.use_msmarco:
         return []
         
@@ -61,11 +57,7 @@ def load_msmarco():
     for example in tqdm(dataset, desc="Processing MS-MARCO"):
         for passage in example['passages']['passage_text']:
             words.extend(preprocess(passage))
-            if Config.max_words and len(words) >= Config.max_words // 2:
-                print(f"Reached word limit for MS-MARCO: {len(words):,}")
-                return words
     return words
-
 def preprocess(text):
     """Clean and tokenize text"""
     text = text.lower()
