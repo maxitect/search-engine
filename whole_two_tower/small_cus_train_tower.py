@@ -39,6 +39,9 @@ class CustomMSMARCODataset(Dataset):
                         'passage': passage_text,
                         'is_selected': selected
                     })
+        
+        # Use only 1/10 of the data
+        self.data = self.data[:len(self.data)//10]
     
     def __len__(self):
         return len(self.data)
@@ -149,26 +152,8 @@ def train_step(model, optimizer, query_batch, pos_passage_batch, neg_passage_bat
         pos_scores = model(query_batch, pos_passage_batch)
         neg_scores = model(query_batch, neg_passage_batch)
         
-        # Check for NaN in scores
-        if torch.isnan(pos_scores).any() or torch.isnan(neg_scores).any():
-            print("Warning: NaN detected in model scores")
-            return float('nan')
-        
-        # Compute loss with numerical stability checks
-        score_diff = pos_scores - neg_scores
-        if torch.isnan(score_diff).any():
-            print("Warning: NaN in score difference")
-            return float('nan')
-            
-        # Clamp score difference to prevent overflow in exp
-        score_diff = torch.clamp(score_diff, min=-100, max=100)
-        
         # Compute loss
-        loss = -torch.mean(torch.log(torch.sigmoid(score_diff)))
-        
-        if torch.isnan(loss):
-            print("Warning: NaN in loss calculation")
-            return float('nan')
+        loss = -torch.mean(torch.log(torch.sigmoid(pos_scores - neg_scores)))
         
         # Backward pass
         optimizer.zero_grad()
@@ -176,12 +161,6 @@ def train_step(model, optimizer, query_batch, pos_passage_batch, neg_passage_bat
         
         # Gradient clipping
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-        
-        # Check for NaN gradients
-        for name, param in model.named_parameters():
-            if param.grad is not None and torch.isnan(param.grad).any():
-                print(f"Warning: NaN in gradients for {name}")
-                return float('nan')
         
         optimizer.step()
         
@@ -206,7 +185,7 @@ def train_model(config):
     wandb.init(
         project="custom-two-tower-search",
         config=config,
-        name=f"custom_two_tower_{time.strftime('%Y%m%d_%H%M%S')}",
+        name=f"small_custom_two_tower_{time.strftime('%Y%m%d_%H%M%S')}",
         save_code=True
     )
     
@@ -224,7 +203,7 @@ def train_model(config):
     os.makedirs(models_dir, exist_ok=True)
     
     # Check for existing model checkpoint
-    checkpoint_path = os.path.join(models_dir, 'Custom_Top_Tower_Epoch.pth')
+    checkpoint_path = os.path.join(models_dir, 'cus_small_top_tower_epoch.pth')
     start_epoch = 0
     
     if os.path.exists(checkpoint_path):
@@ -255,17 +234,8 @@ def train_model(config):
     )
     model = model.to(device)
     
-    # Initialize optimizer with lower learning rate
-    optimizer = optim.Adam(model.parameters(), lr=config['learning_rate'] * 0.1)
-    
-    # Learning rate scheduler
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, 
-        mode='min',
-        factor=0.5,
-        patience=2,
-        verbose=True
-    )
+    # Initialize optimizer
+    optimizer = optim.Adam(model.parameters(), lr=config['learning_rate'])
     
     # Load model and optimizer states if resuming
     if start_epoch > 0:
@@ -287,7 +257,6 @@ def train_model(config):
         batch_times = []
         grad_norms = []
         batch_count = 0
-        nan_batches = 0
         
         for batch in tqdm(train_loader, desc=f'Epoch {epoch+1}'):
             try:
@@ -304,12 +273,6 @@ def train_model(config):
                 
                 # Training step
                 loss = train_step(model, optimizer, query, pos_passage, neg_passage)
-                
-                if torch.isnan(torch.tensor(loss)):
-                    nan_batches += 1
-                    print(f"Warning: NaN loss in batch {batch_count}")
-                    continue
-                
                 train_losses.append(loss)
                 
                 # Calculate gradient norms
@@ -324,26 +287,13 @@ def train_model(config):
                 
                 # Log metrics
                 if batch_count % 100 == 0:
-                    # Get memory usage
-                    if torch.cuda.is_available():
-                        memory_allocated = torch.cuda.memory_allocated() / 1024**2
-                        memory_cached = torch.cuda.memory_reserved() / 1024**2
-                    else:
-                        memory_allocated = psutil.Process().memory_info().rss / 1024**2
-                        memory_cached = 0
-                    
                     wandb.log({
                         'train/batch_loss': loss,
                         'train/grad_norm': total_norm ** 0.5,
                         'train/batch_time': time.time() - batch_start_time,
                         'train/learning_rate': optimizer.param_groups[0]['lr'],
                         'train/batch': batch_count,
-                        'train/epoch': epoch + 1,
-                        'train/memory_allocated': memory_allocated,
-                        'train/memory_cached': memory_cached,
-                        'train/nan_batches': nan_batches,
-                        'train/avg_grad_norm': np.mean(grad_norms[-100:]),
-                        'train/avg_batch_time': np.mean(batch_times[-100:])
+                        'train/epoch': epoch + 1
                     })
             except RuntimeError as e:
                 if "CUDNN_STATUS_EXECUTION_FAILED" in str(e):
@@ -357,7 +307,6 @@ def train_model(config):
         model.eval()
         val_losses = []
         val_accuracies = []
-        val_scores = []
         
         for batch in val_loader:
             try:
@@ -368,19 +317,8 @@ def train_model(config):
                 with torch.no_grad():
                     pos_scores = model(query, passage)
                     neg_scores = model(query, passage[torch.randperm(len(passage))])
-                    
-                    # Check for NaN in scores
-                    if torch.isnan(pos_scores).any() or torch.isnan(neg_scores).any():
-                        print("Warning: NaN in validation scores")
-                        continue
-                    
-                    score_diff = pos_scores - neg_scores
-                    score_diff = torch.clamp(score_diff, min=-100, max=100)
-                    loss = -torch.mean(torch.log(torch.sigmoid(score_diff)))
-                    
-                    if not torch.isnan(loss):
-                        val_losses.append(loss.item())
-                        val_scores.extend(pos_scores.cpu().numpy())
+                    loss = -torch.mean(torch.log(torch.sigmoid(pos_scores - neg_scores)))
+                    val_losses.append(loss.item())
                 
                 accuracy = evaluate(model, query, passage, is_selected)
                 val_accuracies.append(accuracy)
@@ -393,18 +331,15 @@ def train_model(config):
                 raise e
         
         # Calculate metrics
-        avg_val_loss = np.mean(val_losses) if val_losses else float('nan')
-        avg_val_accuracy = np.mean(val_accuracies) if val_accuracies else 0.0
-        
-        # Update learning rate
-        scheduler.step(avg_val_loss)
+        avg_val_loss = np.mean(val_losses)
+        avg_val_accuracy = np.mean(val_accuracies)
         
         # Save best model
-        if not np.isnan(avg_val_loss) and avg_val_loss < best_val_loss:
+        if avg_val_loss < best_val_loss:
             best_val_loss = avg_val_loss
             best_epoch = epoch + 1
             
-            model_path = os.path.join(models_dir, 'Custom_Top_Tower_Epoch.pth')
+            model_path = os.path.join(models_dir, 'cus_small_top_tower_epoch.pth')
             torch.save({
                 'epoch': best_epoch,
                 'model_state_dict': model.state_dict(),
@@ -417,27 +352,19 @@ def train_model(config):
         
         # Log epoch metrics
         wandb.log({
-            'epoch/train_loss': np.mean(train_losses) if train_losses else float('nan'),
+            'epoch/train_loss': np.mean(train_losses),
             'epoch/val_loss': avg_val_loss,
             'epoch/val_accuracy': avg_val_accuracy,
             'epoch/time': time.time() - epoch_start_time,
             'epoch/best_val_loss': best_val_loss,
-            'epoch/best_epoch': best_epoch,
-            'epoch/nan_batches': nan_batches,
-            'epoch/learning_rate': optimizer.param_groups[0]['lr'],
-            'epoch/avg_grad_norm': np.mean(grad_norms) if grad_norms else 0.0,
-            'epoch/avg_batch_time': np.mean(batch_times) if batch_times else 0.0,
-            'epoch/val_scores_mean': np.mean(val_scores) if val_scores else 0.0,
-            'epoch/val_scores_std': np.std(val_scores) if val_scores else 0.0
+            'epoch/best_epoch': best_epoch
         })
         
         print(f'Epoch {epoch+1}:')
-        print(f'  Train Loss: {np.mean(train_losses) if train_losses else "nan":.4f}')
+        print(f'  Train Loss: {np.mean(train_losses):.4f}')
         print(f'  Val Loss: {avg_val_loss:.4f}')
         print(f'  Val Accuracy: {avg_val_accuracy:.4f}')
         print(f'  Best Epoch: {best_epoch} (Val Loss: {best_val_loss:.4f})')
-        print(f'  NaN Batches: {nan_batches}')
-        print(f'  Learning Rate: {optimizer.param_groups[0]["lr"]:.6f}')
         
         # Clear CUDA cache after each epoch
         if torch.cuda.is_available():
