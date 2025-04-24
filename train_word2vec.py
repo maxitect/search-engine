@@ -195,14 +195,14 @@ def train():
     wandb.init(project="word2vec-cbow", config={
         "architecture": "CBOW",
         "dataset": "text8+MS-MARCO-full",
-        "embedding_dim": 384,  # Increased from 300
-        "window_size": 10,     # Increased from 8
-        "batch_size": 24576,   # Increased for RTX 4090
+        "embedding_dim": 512,  # Increased from 384
+        "window_size": 12,     # Increased from 10
+        "batch_size": 24576,   
         "test_size": 0.1,
-        "min_count": 15,       # Increased from previous value
-        "initial_lr": 0.01,
+        "min_count": 20,       # Increased from 15
+        "initial_lr": 0.02,    # Increased from 0.01
         "min_lr": 0.0001,
-        "epochs": 10,          # Increased from 5
+        "epochs": 15,          # Increased from 10
         "optimizer": "Adam",
         "scheduler": "ReduceLROnPlateau",
         "mixed_precision": True
@@ -261,15 +261,15 @@ def train():
     print(f"Test set size: {len(test_set)}")
     
     # 4. Initialize model and optimizer
-    model = CBOW(len(vocab), embedding_dim=384).to(device)  # Increased embedding dimension
-    optimizer = optim.Adam(model.parameters(), lr=0.01)
+    model = CBOW(len(vocab), embedding_dim=512).to(device)  # Increased embedding dimension
+    optimizer = optim.Adam(model.parameters(), lr=0.02, weight_decay=1e-4)
     
     # Add learning rate scheduler with more aggressive reduction
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(
         optimizer, 
         mode='min',
         factor=0.5,
-        patience=1,
+        patience=2,  # Increased patience
         verbose=True,
         min_lr=0.0001
     )
@@ -281,7 +281,7 @@ def train():
     
     # 5. Training loop with mixed precision and improved metrics
     batch_size = 24576  # Increased batch size for RTX 4090
-    num_epochs = 10     # Increased epochs
+    num_epochs = 15     # Increased epochs
     
     # Define some simple analogy test cases (if words are in vocabulary)
     analogy_tests = [
