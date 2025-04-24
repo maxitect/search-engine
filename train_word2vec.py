@@ -166,14 +166,14 @@ class CBOW(nn.Module):
         # Positive examples
         context_vec = self.context_embeddings(context).mean(dim=1)
         target_vec = self.embeddings(target)
-        pos_score = torch.matmul(target_vec, context_vec.t()).diag().sigmoid().log()
-        
+        pos_score = torch.sum(target_vec * context_vec, dim=1).sigmoid().log()
+      
         # Negative sampling
         noise = torch.randint(0, self.vocab_size, 
                             (target.shape[0], self.negative_samples),
                             device=target.device)
         noise_vec = self.embeddings(noise)
-        neg_score = torch.bmm(noise_vec, context_vec.unsqueeze(2)).sigmoid().log().sum(1)
+        neg_score = torch.bmm(noise_vec, context_vec.unsqueeze(2)).squeeze().sigmoid().log().sum(1)
         
         return -(pos_score + neg_score).mean()
     
