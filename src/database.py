@@ -1,7 +1,7 @@
 import pandas as pd
 import pickle
 import torch
-import tqdm
+from tqdm import tqdm
 from chromadb import Client
 
 import src.config as config
