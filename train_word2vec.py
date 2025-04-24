@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
 from datasets import load_dataset
@@ -19,24 +20,25 @@ class Config:
     output_dir = os.path.join(data_dir, "word2vec")
     
     # Vocabulary
-    vocab_min_count = 5  # Only keep frequent words
+    vocab_min_count = 100  # Only keep frequent words
     
     # Model architecture
-    embedding_dim = 200    # Reduced from 300 for memory
+    embedding_dim = 300    # Increased embedding dimension
     window_size = 5        # Context window size
-    negative_samples = 5   # Number of negative samples
+    negative_samples = 15  # Increased negative samples
     
     # Training
-    batch_size = 1024      # Reduced to prevent OOM
-    grad_accumulation = 8  # Gradient accumulation steps
-    initial_lr = 0.01      # Reduced learning rate
+    batch_size = 2048      # Larger batch size for 4090 GPU
+    grad_accumulation = 4  # Gradient accumulation steps
+    initial_lr = 0.025     # Standard starting LR for word2vec
     min_lr = 0.0001
-    epochs = 10            # Increased epochs
+    epochs = 20            # Increased epochs
     use_mixed_precision = True
+    weight_decay = 1e-5    # Small weight decay
     device = "cuda" if torch.cuda.is_available() else "cpu"
     
     # Data processing
-    max_words = None   # Limit words to process
+    max_words = None       # No word limit
     use_msmarco = True     # Whether to use MS-MARCO
 
 def load_text8():
@@ -44,7 +46,7 @@ def load_text8():
     print("Loading text8 dataset...")
     with open(Config.text8_path, "r") as f:
         text = f.read()
-    return preprocess(text)  # Return all words without limiting
+    return preprocess(text)
 
 def load_msmarco():
     """Load full MS-MARCO dataset without limits"""
@@ -58,6 +60,7 @@ def load_msmarco():
         for passage in example['passages']['passage_text']:
             words.extend(preprocess(passage))
     return words
+
 def preprocess(text):
     """Clean and tokenize text"""
     text = text.lower()
@@ -73,12 +76,17 @@ def preprocess(text):
     return [w for w in text.split() if len(w) > 1 and not w.isdigit() and not any(c.isdigit() for c in w)]
 
 def build_vocab(words, min_count):
-    """Build vocabulary from words"""
+    """Build vocabulary with frequency information"""
     word_counts = Counter(words)
     vocab = [word for word, count in word_counts.items() if count >= min_count]
     word2idx = {word: idx for idx, word in enumerate(vocab)}
     idx2word = {idx: word for idx, word in enumerate(vocab)}
-    return vocab, word2idx, idx2word
+    
+    # Create frequency distribution for negative sampling
+    word_freq = np.array([word_counts[word] for word in vocab], dtype=np.float32)
+    word_freq /= word_freq.sum()
+    
+    return vocab, word2idx, idx2word, word_freq
 
 class Word2VecDataset(Dataset):
     def __init__(self, words, word2idx, window_size):
@@ -120,11 +128,11 @@ class CBOW(nn.Module):
         self.context_embeddings = nn.Embedding(vocab_size, embedding_dim)
         self.vocab_size = vocab_size
         self.negative_samples = negative_samples
-        self.word_freq = torch.tensor(word_freq, dtype=torch.float32)
+        self.register_buffer('word_freq', torch.from_numpy(word_freq).float())
         self._init_weights()
     
     def _init_weights(self):
-        # Better initialization range
+        """Better initialization range"""
         init_range = 1.0 / math.sqrt(self.embeddings.embedding_dim)
         nn.init.uniform_(self.embeddings.weight, -init_range, init_range)
         nn.init.uniform_(self.context_embeddings.weight, -init_range, init_range)
@@ -141,11 +149,11 @@ class CBOW(nn.Module):
         pos_loss = F.logsigmoid(pos_score)
         
         # Negative sampling with frequency-based distribution
-        noise_dist = self.word_freq.pow(0.75) / self.word_freq.pow(0.75).sum()
-        noise_words = torch.multinomial(noise_dist, 
-                                     batch_size * self.negative_samples,
-                                     replacement=True)
-        noise_words = noise_words.view(batch_size, self.negative_samples).to(context.device)
+        noise_words = torch.multinomial(
+            self.word_freq.pow(0.75),
+            batch_size * self.negative_samples,
+            replacement=True
+        ).view(batch_size, self.negative_samples).to(context.device)
         
         # Negative score
         noise_vec = self.embeddings(noise_words)
@@ -153,6 +161,11 @@ class CBOW(nn.Module):
         neg_loss = F.logsigmoid(-neg_score).sum(1)
         
         return -(pos_loss + neg_loss).mean()
+    
+    def get_embeddings(self):
+        """Average of input and output embeddings"""
+        return (self.embeddings.weight + self.context_embeddings.weight) / 2
+
 def train():
     # Setup
     os.makedirs(Config.output_dir, exist_ok=True)
@@ -168,8 +181,8 @@ def train():
     print(f"- MS-MARCO words: {len(msmarco_words):,}")
     print(f"- Total words: {len(text8_words + msmarco_words):,}")
     
-    # Build vocabulary
-    vocab, word2idx, idx2word = build_vocab(text8_words + msmarco_words, Config.vocab_min_count)
+    # Build vocabulary with frequencies
+    vocab, word2idx, idx2word, word_freq = build_vocab(text8_words + msmarco_words, Config.vocab_min_count)
     print(f"Vocabulary size: {len(vocab):,} (min count={Config.vocab_min_count})")
     
     # Create dataset and dataloader
@@ -178,29 +191,29 @@ def train():
         dataset,
         batch_size=Config.batch_size,
         shuffle=True,
-        num_workers=2,
+        num_workers=4,
         pin_memory=True
     )
     
-    # Initialize model
-    model = CBOW(len(vocab), Config.embedding_dim, Config.negative_samples)
-    try:
-        model = model.to(Config.device)
-    except RuntimeError:
-        print("Failed to move model to GPU, falling back to CPU")
-        Config.device = "cpu"
-        model = model.to(Config.device)
+    # Initialize model with word frequencies
+    model = CBOW(len(vocab), Config.embedding_dim, Config.negative_samples, word_freq)
+    model = model.to(Config.device)
     
-    optimizer = optim.Adam(model.parameters(), lr=Config.initial_lr)
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, 
-        mode='min',
-        factor=0.5,
-        patience=1,
-        min_lr=Config.min_lr
+    # Use SGD optimizer (better for word2vec)
+    optimizer = optim.SGD(
+        model.parameters(),
+        lr=Config.initial_lr,
+        weight_decay=Config.weight_decay
     )
     
-    scaler = torch.amp.GradScaler(init_scale=1024, enabled=Config.use_mixed_precision and Config.device == "cuda")
+    # Cosine learning rate scheduler
+    scheduler = optim.lr_scheduler.CosineAnnealingLR(
+        optimizer,
+        T_max=len(dataloader)*Config.epochs,
+        eta_min=Config.min_lr
+    )
+    
+    scaler = torch.amp.GradScaler(enabled=Config.use_mixed_precision and Config.device == "cuda")
     
     # Training loop
     best_loss = float('inf')
@@ -230,19 +243,22 @@ def train():
             if (i + 1) % Config.grad_accumulation == 0 or (i + 1) == len(dataloader):
                 # Gradient clipping
                 scaler.unscale_(optimizer)
-                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), 5.0)
                 
                 # Optimizer step
                 scaler.step(optimizer)
                 scaler.update()
                 optimizer.zero_grad(set_to_none=True)
+                scheduler.step()
             
             # Update metrics
             total_loss += loss.item() * Config.grad_accumulation
-            progress_bar.set_postfix({"loss": total_loss / (i + 1), "lr": optimizer.param_groups[0]['lr']})
+            progress_bar.set_postfix({
+                "loss": total_loss / (i + 1),
+                "lr": optimizer.param_groups[0]['lr']
+            })
         
         avg_loss = total_loss / len(dataloader)
-        scheduler.step(avg_loss)
         
         # Save best model
         if avg_loss < best_loss:
@@ -262,18 +278,20 @@ def train():
         print(f"Epoch {epoch+1}: Loss = {avg_loss:.4f}, LR = {optimizer.param_groups[0]['lr']:.6f}")
         
         # Validation checks
-        if epoch % 5 == 0:
+        if epoch % 5 == 0 or epoch == Config.epochs - 1:
             with torch.no_grad():
-                test_words = ["computer", "data", "learning"]
+                test_words = ["computer", "data", "learning", "algorithm", "network"]
+                print("\nWord similarities:")
                 for word in test_words:
                     if word in word2idx:
                         vec = model.get_embeddings()[word2idx[word]]
                         sims = torch.cosine_similarity(vec, model.get_embeddings(), dim=1)
                         top_k = torch.topk(sims, k=6)[1][1:]  # Exclude self
-                        similar_words = [idx2word[idx] for idx in top_k if idx != word2idx[word]]
-                        print(f"Top similar words to '{word}': {similar_words}")
+                        similar_words = [idx2word[idx.item()] for idx in top_k]
+                        print(f"'{word}': {similar_words}")
                     else:
                         print(f"'{word}' not in vocabulary.")
+                print()
 
 if __name__ == "__main__":
     train()
