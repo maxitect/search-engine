@@ -11,34 +11,57 @@ import wandb
 import os
 import re
 import time
+from contextlib import nullcontext
 
-def clean_text(text):
-    """Basic text cleaning"""
-    # Convert to lowercase
+def preprocess(text: str) -> list[str]:
+    """Enhanced text preprocessing with punctuation protection"""
     text = text.lower()
     
-    # Replace punctuation with spaces
-    text = re.sub(r'[^\w\s]', ' ', text)
+    # Replace punctuation with special tokens
+    replacements = {
+        '.': ' <PERIOD> ',
+        ',': ' <COMMA> ',
+        '"': ' <QUOTATION_MARK> ',
+        ';': ' <SEMICOLON> ',
+        '!': ' <EXCLAMATION_MARK> ',
+        '?': ' <QUESTION_MARK> ',
+        '(': ' <LEFT_PAREN> ',
+        ')': ' <RIGHT_PAREN> ',
+        '--': ' <HYPHENS> ',
+        ':': ' <COLON> ',
+        "'": " <APOSTROPHE> ",
+        "\n": " <NEWLINE> "
+    }
     
-    # Replace multiple spaces with single space
-    text = re.sub(r'\s+', ' ', text)
+    for k, v in replacements.items():
+        text = text.replace(k, v)
     
-    # Split into words and remove empty strings
-    words = [word for word in text.split() if word]
-    
+    # Split into words and filter
+    words = text.split()
+    word_counts = Counter(words)
+    words = [word for word in words if word_counts[word] > 5]
     return words
 
+def create_lookup_tables(words: list[str]) -> tuple[dict[str, int], dict[int, str]]:
+    """Create word to index and index to word mappings"""
+    word_counts = Counter(words)
+    vocab = sorted(word_counts, key=lambda k: word_counts.get(k), reverse=True)
+    int_to_vocab = {ii+1: word for ii, word in enumerate(vocab)}
+    int_to_vocab[0] = '<PAD>'
+    vocab_to_int = {word: ii for ii, word in int_to_vocab.items()}
+    return vocab_to_int, int_to_vocab
+
 def load_text8():
-    """Load and clean text8 dataset"""
+    """Load and preprocess text8 dataset"""
     print("Loading text8...")
     with open("data/text8", "r") as f:
         text = f.read()
-    words = clean_text(text)
+    words = preprocess(text)
     print(f"Loaded {len(words)} words from text8")
     return words
 
 def load_msmarco():
-    """Load and clean MS-MARCO dataset"""
+    """Load and preprocess MS-MARCO dataset"""
     print("Loading MS-MARCO...")
     dataset = load_dataset("ms_marco", "v1.1", split="train")
     words = []
@@ -56,7 +79,7 @@ def load_msmarco():
         for example in chunk:
             passages = example['passages']['passage_text']
             for passage in passages:
-                chunk_words.extend(clean_text(passage))
+                chunk_words.extend(preprocess(passage))
         
         words.extend(chunk_words)
         print(f"Processed {chunk_end}/{total_examples} examples, current word count: {len(words)}")
@@ -65,21 +88,26 @@ def load_msmarco():
     return words
 
 def combine_datasets():
-    """Combine text8 and MS-MARCO datasets"""
+    """Combine text8 and MS-MARCO datasets into a single corpus"""
     text8_words = load_text8()
     msmarco_words = load_msmarco()
     
     # Combine words
     all_words = text8_words + msmarco_words
-    
-    # Build vocabulary
-    word_counts = Counter(all_words)
-    vocab = [word for word, count in word_counts.items() if count >= 5]  # Basic filtering
-    
     print(f"Total words after combining: {len(all_words)}")
-    print(f"Vocabulary size: {len(vocab)}")
     
-    return all_words, vocab
+    # Create lookup tables
+    word2idx, idx2word = create_lookup_tables(all_words)
+    print(f"Vocabulary size: {len(word2idx)}")
+    
+    # Convert words to indices
+    tokens = [word2idx[word] for word in all_words]
+    
+    # Save tokens to file
+    with open("data/word2vec/tokens.txt", "w", encoding="utf-8") as f:
+        f.write('\n'.join(map(str, tokens)))
+    
+    return tokens, word2idx, idx2word
 
 class CBOW(nn.Module):
     def __init__(self, vocab_size, embedding_dim=300):
@@ -128,18 +156,21 @@ def train():
         "window_size": 5,
         "batch_size": 4096,
         "learning_rate": 0.001,
-        "epochs": 10
+        "epochs": 10,
+        "gradient_accumulation_steps": 4
     })
     
     # Set device
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
     
+    # Enable cuDNN benchmarking for faster training
+    if device.type == 'cuda':
+        torch.backends.cudnn.benchmark = True
+    
     # Load and combine datasets
     print("Loading and combining datasets...")
-    words, vocab = combine_datasets()
-    word2idx = {word: idx for idx, word in enumerate(vocab)}
-    idx2word = {idx: word for word, idx in word2idx.items()}
+    tokens, word2idx, idx2word = combine_datasets()
     
     # Create training pairs
     print("Creating training pairs...")
@@ -148,19 +179,14 @@ def train():
     
     # Process in chunks to manage memory
     chunk_size = 1000000
-    for i in tqdm(range(0, len(words), chunk_size), desc="Creating training pairs"):
-        chunk_end = min(i + chunk_size, len(words))
-        chunk = words[i:chunk_end]
+    for i in tqdm(range(0, len(tokens), chunk_size), desc="Creating training pairs"):
+        chunk_end = min(i + chunk_size, len(tokens))
+        chunk = tokens[i:chunk_end]
         
         for j in range(window_size, len(chunk)-window_size):
             context = chunk[j-window_size:j] + chunk[j+1:j+window_size+1]
             target = chunk[j]
-            
-            if target in word2idx and all(c in word2idx for c in context):
-                train_data.append((
-                    [word2idx[c] for c in context],
-                    word2idx[target]
-                ))
+            train_data.append((context, target))
         
         # Free memory
         del chunk
@@ -178,18 +204,19 @@ def train():
     
     # Free memory
     del train_data
-    del words
+    del tokens
     
     # Initialize model and optimizer
-    model = CBOW(len(vocab), embedding_dim=wandb.config.embedding_dim).to(device)
+    model = CBOW(len(word2idx), embedding_dim=wandb.config.embedding_dim).to(device)
     optimizer = optim.Adam(model.parameters(), lr=wandb.config.learning_rate)
     
     # Initialize gradient scaler for mixed precision training
-    scaler = GradScaler()
+    scaler = torch.amp.GradScaler('cuda') if device.type == 'cuda' else None
     
     # Training loop
     batch_size = wandb.config.batch_size
     num_epochs = wandb.config.epochs
+    accumulation_steps = wandb.config.gradient_accumulation_steps
     
     # Define test words
     test_words = ["computer", "technology", "data", "learning", "system"]
@@ -205,6 +232,8 @@ def train():
         np.random.shuffle(train_set)
         
         with tqdm(range(0, len(train_set), batch_size), desc=f"Epoch {epoch+1}/{num_epochs}") as pbar:
+            optimizer.zero_grad()  # Zero gradients at the start of epoch
+            
             for i in pbar:
                 batch = train_set[i:i+batch_size]
                 if not batch:
@@ -214,23 +243,32 @@ def train():
                 context_tensor = torch.LongTensor(contexts).to(device)
                 target_tensor = torch.LongTensor(targets).to(device)
                 
-                optimizer.zero_grad()
-                
                 # Use mixed precision training
-                with autocast():
+                with torch.amp.autocast('cuda') if device.type == 'cuda' else nullcontext():
                     outputs = model(context_tensor)
                     loss = F.cross_entropy(outputs, target_tensor)
+                    loss = loss / accumulation_steps  # Scale loss for gradient accumulation
                 
                 # Scale gradients and optimize
-                scaler.scale(loss).backward()
-                scaler.step(optimizer)
-                scaler.update()
+                if scaler is not None:
+                    scaler.scale(loss).backward()
+                else:
+                    loss.backward()
+                
+                # Step optimizer after accumulating gradients
+                if (i + 1) % accumulation_steps == 0:
+                    if scaler is not None:
+                        scaler.step(optimizer)
+                        scaler.update()
+                    else:
+                        optimizer.step()
+                    optimizer.zero_grad()
                 
                 # Update metrics
                 _, predicted = torch.max(outputs.data, 1)
                 total += target_tensor.size(0)
                 correct += (predicted == target_tensor).sum().item()
-                total_loss += loss.item()
+                total_loss += loss.item() * accumulation_steps  # Scale back the loss
                 
                 # Update progress bar
                 pbar.set_postfix({
@@ -242,6 +280,10 @@ def train():
                 del context_tensor
                 del target_tensor
                 del outputs
+                
+                # Clear CUDA cache periodically
+                if device.type == 'cuda' and i % 100 == 0:
+                    torch.cuda.empty_cache()
         
         # Evaluation
         model.eval()
@@ -266,6 +308,11 @@ def train():
                 test_total += target_tensor.size(0)
                 test_correct += (predicted == target_tensor).sum().item()
                 test_loss += loss.item()
+                
+                # Free memory
+                del context_tensor
+                del target_tensor
+                del outputs
         
         # Calculate metrics
         train_loss = total_loss / (len(train_set) // batch_size)
@@ -311,7 +358,6 @@ def train():
     embeddings = model.embeddings.weight.data.cpu().numpy()
     torch.save({
         'embeddings': embeddings,
-        'vocab': vocab,
         'word2idx': word2idx,
         'idx2word': idx2word
     }, "data/word2vec/word2vec_cbow_final.pt")
@@ -319,7 +365,7 @@ def train():
     # Save in numpy format
     np.save("data/word2vec/embeddings.npy", embeddings)
     with open("data/word2vec/vocab.txt", "w") as f:
-        for word in vocab:
+        for word in word2idx:
             f.write(word + "\n")
     
     wandb.finish()
