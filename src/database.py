@@ -17,12 +17,11 @@ def load_docs(path):
 
 def embed_docs(model, vocab, docs, batch_size=64):
     """Embed documents in batches using the document tower."""
+    # Determine the device the model is on
+    device = next(model.parameters()).device
     embs = []
-    total_batches = (len(docs) + batch_size - 1) // batch_size
-    print(f"Processing {len(docs)} documents in {total_batches} batches...")
+
     for i in range(0, len(docs), batch_size):
-        if i % (batch_size * 10) == 0:
-            print(f"Processing batch {i//batch_size}/{total_batches}...")
         batch = docs[i:i+batch_size]
         seqs = []
         for text in batch:
@@ -32,11 +31,18 @@ def embed_docs(model, vocab, docs, batch_size=64):
             if len(ids) < config.MAX_DOC_LEN:
                 ids += [0] * (config.MAX_DOC_LEN - len(ids))
             seqs.append(ids)
-        x = torch.tensor(seqs)
+
+        # Move input tensor to the same device as the model
+        x = torch.tensor(seqs, device=device)
+
         with torch.no_grad():
             emb = model.doc_tower(x)
+            # Move embeddings back to CPU for numpy conversion
+            emb = emb.cpu()
+
         # convert to list
         embs.extend(emb.numpy().tolist())
+
     return embs
 
 
