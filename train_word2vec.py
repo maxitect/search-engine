@@ -225,7 +225,7 @@ def train():
         "min_count": 15,       # Reduced from 20
         "initial_lr": 0.001,   # Reduced from 0.01
         "min_lr": 0.0001,
-        "epochs": 15,
+        "epochs": 5,
         "optimizer": "Adam",
         "scheduler": "CosineAnnealingLR",  # Changed to cosine annealing
         "mixed_precision": True,
