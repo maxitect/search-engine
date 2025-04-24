@@ -55,7 +55,8 @@ def load_model(model_path="data/word2vec/word2vec_cbow_final.pt"):
     
     # Load the saved embeddings and vocabulary
     try:
-        # First try with weights_only=True (default in PyTorch 2.6)
+        # First try with weights_only=True and allow numpy arrays
+        torch.serialization.add_safe_globals([np._core.multiarray._reconstruct])
         checkpoint = torch.load(model_path, map_location=torch.device('cpu'), weights_only=True)
     except Exception as e:
         # If that fails, try with weights_only=False (old behavior)
