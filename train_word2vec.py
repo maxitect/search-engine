@@ -195,17 +195,18 @@ def train():
     wandb.init(project="word2vec-cbow", config={
         "architecture": "CBOW",
         "dataset": "text8+MS-MARCO-full",
-        "embedding_dim": 512,  # Increased from 384
-        "window_size": 12,     # Increased from 10
-        "batch_size": 24576,   
+        "embedding_dim": 512,
+        "window_size": 12,
+        "batch_size": 16384,  # Reduced from 24576 for better stability
         "test_size": 0.1,
-        "min_count": 20,       # Increased from 15
-        "initial_lr": 0.02,    # Increased from 0.01
+        "min_count": 20,
+        "initial_lr": 0.01,   # Reduced from 0.02
         "min_lr": 0.0001,
-        "epochs": 15,          # Increased from 10
+        "epochs": 15,
         "optimizer": "Adam",
         "scheduler": "ReduceLROnPlateau",
-        "mixed_precision": True
+        "mixed_precision": True,
+        "gradient_clip": 1.0  # Added gradient clipping
     })
     
     # Create data directory if it doesn't exist
@@ -217,6 +218,7 @@ def train():
     # Enable cuDNN benchmark mode for faster training
     if device.type == 'cuda':
         torch.backends.cudnn.benchmark = True
+        torch.backends.cudnn.deterministic = False
     
     # 1. Get all words
     print("Loading and combining datasets...")
@@ -225,19 +227,18 @@ def train():
     # 2. Build vocabulary with stricter filtering
     print("Building vocabulary...")
     word_counts = Counter(words)
-    vocab = [word for word, count in word_counts.items() if count >= 15]  # Increased threshold
+    vocab = [word for word, count in word_counts.items() if count >= 15]
     print(f"Vocabulary size: {len(vocab)}")
     word2idx = {word: idx for idx, word in enumerate(vocab)}
     idx2word = {idx: word for word, idx in word2idx.items()}
     
     # Define test words for similarity evaluation
     test_words = ["computer", "technology", "data", "learning", "system"]
-    # Filter to only include words in vocabulary
     test_words = [w for w in test_words if w in word2idx]
     
     # 3. Prepare CBOW training data with larger window
     print("Preparing training data...")
-    window_size = 10  # Increased window size for better context
+    window_size = 10
     train_data = []
     
     for i in tqdm(range(window_size, len(words)-window_size), desc="Creating training pairs"):
@@ -253,7 +254,7 @@ def train():
     
     # Split data into train and test sets
     np.random.shuffle(train_data)
-    split_idx = int(len(train_data) * 0.9)  # 90% train, 10% test
+    split_idx = int(len(train_data) * 0.9)
     train_set = train_data[:split_idx]
     test_set = train_data[split_idx:]
     
@@ -261,29 +262,29 @@ def train():
     print(f"Test set size: {len(test_set)}")
     
     # 4. Initialize model and optimizer
-    model = CBOW(len(vocab), embedding_dim=512).to(device)  # Increased embedding dimension
-    optimizer = optim.Adam(model.parameters(), lr=0.02, weight_decay=1e-4)
+    model = CBOW(len(vocab), embedding_dim=512).to(device)
+    optimizer = optim.Adam(model.parameters(), lr=wandb.config.initial_lr, weight_decay=1e-4)
     
     # Add learning rate scheduler with more aggressive reduction
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(
         optimizer, 
         mode='min',
         factor=0.5,
-        patience=2,  # Increased patience
+        patience=2,
         verbose=True,
-        min_lr=0.0001
+        min_lr=wandb.config.min_lr
     )
     
     criterion = nn.CrossEntropyLoss()
     
     # Initialize gradient scaler for mixed precision training
-    scaler = GradScaler()
+    scaler = torch.amp.GradScaler('cuda')
     
     # 5. Training loop with mixed precision and improved metrics
-    batch_size = 24576  # Increased batch size for RTX 4090
-    num_epochs = 15     # Increased epochs
+    batch_size = wandb.config.batch_size
+    num_epochs = wandb.config.epochs
     
-    # Define some simple analogy test cases (if words are in vocabulary)
+    # Define some simple analogy test cases
     analogy_tests = [
         ("man", "king", "woman", "queen"),
         ("good", "best", "bad", "worst"),
@@ -315,12 +316,14 @@ def train():
                 optimizer.zero_grad()
                 
                 # Use mixed precision training
-                with autocast():
+                with torch.amp.autocast('cuda'):
                     outputs = model(context_tensor)
                     loss = criterion(outputs, target_tensor)
                 
-                # Scale gradients and optimize
+                # Scale gradients and optimize with gradient clipping
                 scaler.scale(loss).backward()
+                scaler.unscale_(optimizer)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), wandb.config.gradient_clip)
                 scaler.step(optimizer)
                 scaler.update()
                 
@@ -382,7 +385,6 @@ def train():
         for test_word in test_words:
             if test_word in word2idx:
                 similar = get_similar_words(model, test_word, word2idx, idx2word)
-                # Format results for logging
                 if isinstance(similar, list):
                     similarity_results[test_word] = ", ".join([f"{word} ({score:.3f})" for word, score in similar[:5]])
                 else:
