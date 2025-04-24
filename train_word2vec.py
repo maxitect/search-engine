@@ -168,7 +168,7 @@ def train():
     
     # 5. Training loop with progress bar
     batch_size = 2048
-    num_epochs = 10
+    num_epochs = 5
     
     for epoch in range(num_epochs):
         model.train()
