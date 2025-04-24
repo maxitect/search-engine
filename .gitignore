@@ -45,6 +45,7 @@ venv/
 ENV/
 conda-env/
 Miniconda3-latest-Linux-x86_64.sh
+miniconda.sh
 
 # Docker
 .docker/
@@ -72,6 +73,7 @@ data/
 !models/.gitkeep
 saved_models/
 models/text8_embeddings/
+models/
 
 
 # Streamlit

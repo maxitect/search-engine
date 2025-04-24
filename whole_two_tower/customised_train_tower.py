@@ -199,6 +199,20 @@ def train_model(config):
     models_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'models')
     os.makedirs(models_dir, exist_ok=True)
     
+    # Check for existing model checkpoint
+    checkpoint_path = os.path.join(models_dir, 'Custom_Top_Tower_Epoch.pth')
+    start_epoch = 0
+    
+    if os.path.exists(checkpoint_path):
+        print("\nFound existing model checkpoint!")
+        choice = input("Do you want to resume training from the last saved epoch? (y/n): ").lower()
+        if choice == 'y':
+            checkpoint = torch.load(checkpoint_path)
+            start_epoch = checkpoint['epoch']
+            print(f"Resuming training from epoch {start_epoch}")
+        else:
+            print("Starting fresh training")
+    
     # Create datasets with vocab_size
     train_dataset = CustomMSMARCODataset(config['train_path'], vocab_size=config['vocab_size'])
     val_dataset = CustomMSMARCODataset(config['val_path'], vocab_size=config['vocab_size'])
@@ -220,11 +234,18 @@ def train_model(config):
     # Initialize optimizer
     optimizer = optim.Adam(model.parameters(), lr=config['learning_rate'])
     
-    # Training loop
-    best_val_loss = float('inf')
-    best_epoch = 0
+    # Load model and optimizer states if resuming
+    if start_epoch > 0:
+        model.load_state_dict(checkpoint['model_state_dict'])
+        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        best_val_loss = checkpoint['val_loss']
+        best_epoch = checkpoint['epoch']
+    else:
+        best_val_loss = float('inf')
+        best_epoch = 0
     
-    for epoch in range(config['epochs']):
+    # Training loop
+    for epoch in range(start_epoch, config['epochs']):
         epoch_start_time = time.time()
         
         # Training

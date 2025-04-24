@@ -82,6 +82,27 @@ def train_model(config):
     models_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'models')
     os.makedirs(models_dir, exist_ok=True)
     
+    # Check if model exists and ask user if they want to resume
+    model_path = os.path.join(models_dir, 'Top_Tower_Epoch.pth')
+    start_epoch = 0
+    best_val_loss = float('inf')
+    best_epoch = 0
+    
+    if os.path.exists(model_path):
+        print("\nFound existing model checkpoint.")
+        choice = input("Do you want to resume training from the last saved epoch? (y/n): ").strip().lower()
+        if choice == 'y':
+            print("Loading existing model...")
+            checkpoint = torch.load(model_path)
+            start_epoch = checkpoint['epoch']
+            best_val_loss = checkpoint['val_loss']
+            best_epoch = checkpoint['epoch']
+            print(f"Resuming from epoch {start_epoch} with validation loss: {best_val_loss:.4f}")
+        else:
+            print("Starting fresh training...")
+    else:
+        print("No existing model found. Starting fresh training...")
+    
     # Create datasets
     train_dataset = MSMARCODataset(config['train_path'])
     val_dataset = MSMARCODataset(config['val_path'])
@@ -103,6 +124,10 @@ def train_model(config):
         hidden_dim=config['hidden_dim']
     )
     
+    # Load model state if resuming
+    if start_epoch > 0:
+        model.load_state_dict(checkpoint['model_state_dict'])
+    
     # Print model architecture
     print("\nModel Architecture:")
     print("Query Tower:")
@@ -119,11 +144,12 @@ def train_model(config):
     # Initialize optimizer
     optimizer = optim.Adam(model.parameters(), lr=config['learning_rate'])
     
-    # Training loop
-    best_val_loss = float('inf')
-    best_epoch = 0
+    # Load optimizer state if resuming
+    if start_epoch > 0:
+        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
     
-    for epoch in range(config['epochs']):
+    # Training loop
+    for epoch in range(start_epoch, config['epochs']):
         epoch_start_time = time.time()
         
         # Training
@@ -226,7 +252,6 @@ def train_model(config):
             best_epoch = epoch + 1
             
             # Save the best model
-            model_path = os.path.join(models_dir, 'Top_Tower_Epoch.pth')
             torch.save({
                 'epoch': best_epoch,
                 'model_state_dict': model.state_dict(),
@@ -306,7 +331,7 @@ def train_model(config):
     print("\nTraining Summary:")
     print(f"Best model saved at epoch {best_epoch}")
     print(f"Best validation loss: {best_val_loss:.4f}")
-    print(f"Model saved to: {os.path.join(models_dir, 'Top_Tower_Epoch.pth')}")
+    print(f"Model saved to: {model_path}")
 
 if __name__ == '__main__':
     config = {
