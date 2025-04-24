@@ -16,7 +16,7 @@ import numpy as np
 
 from ..config import Config
 from ..models.word2vec import Word2VecModel
-from ..utils.memory import calculate_dynamic_batch_size
+from ..utils.memory import calculate_dynamic_batch_size, clear_memory
 
 class SubsampledMemoryEfficientDataset(Dataset):
     """Memory-efficient dataset that generates context-target pairs on-the-fly."""
@@ -100,8 +100,7 @@ def train_on_chunk(model: Word2VecModel, data_chunk: List[str],
             optimizer.zero_grad()
             
             # Clear cache after each gradient step
-            torch.cuda.empty_cache()
-            gc.collect()
+            clear_memory()
         
         # Track loss
         total_loss += loss.item() * gradient_accumulation_steps
@@ -111,9 +110,8 @@ def train_on_chunk(model: Word2VecModel, data_chunk: List[str],
         progress_bar.set_description(f"Loss: {total_loss/total_batches:.4f}")
         
         # Clear memory periodically
-        if batch_idx % 10 == 0:
-            torch.cuda.empty_cache()
-            gc.collect()
+        if batch_idx % 5 == 0:  # More frequent memory cleanup
+            clear_memory()
     
     # Make sure to update any remaining accumulated gradients
     if total_batches % gradient_accumulation_steps != 0:
@@ -131,8 +129,7 @@ def train_word2vec(filtered_words: List[str], word_to_idx: Dict[str, int],
     print(f"Creating model with vocabulary size: {vocab_size}")
     
     # Free memory before creating model
-    gc.collect()
-    torch.cuda.empty_cache()
+    clear_memory()
     
     # Initialize model
     model = Word2VecModel(
@@ -202,8 +199,7 @@ def train_word2vec(filtered_words: List[str], word_to_idx: Dict[str, int],
                 model.train()
             
             # Clear memory between chunks
-            gc.collect()
-            torch.cuda.empty_cache()
+            clear_memory()
         
         # Calculate average loss for epoch
         avg_epoch_loss = epoch_loss / len(filtered_words)
@@ -230,7 +226,7 @@ def train_word2vec(filtered_words: List[str], word_to_idx: Dict[str, int],
     embeddings = model.embeddings.weight.data.cpu().numpy()
     
     # Save in chunks
-    chunk_size = 2000
+    chunk_size = 1000  # Smaller chunk size for saving
     for i in range(0, len(word_to_idx), chunk_size):
         chunk_end = min(i + chunk_size, len(word_to_idx))
         chunk_embeddings = embeddings[i:chunk_end]

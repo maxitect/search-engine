@@ -16,25 +16,25 @@ class Word2VecModel(nn.Module):
     def __init__(self, vocab_size: int, embedding_dim: int, use_sparse: bool = True):
         super(Word2VecModel, self).__init__()
         
-        # Split vocabulary into chunks
-        self.chunk_size = 2000
+        # Split vocabulary into smaller chunks
+        self.chunk_size = 1000  # Reduced from 2000
         self.num_chunks = (vocab_size + self.chunk_size - 1) // self.chunk_size
         
-        # Create embedding chunks
+        # Create embedding chunks with sparse tensors
         self.embeddings = nn.ModuleList([
             nn.Embedding(min(self.chunk_size, vocab_size - i * self.chunk_size), 
                         embedding_dim, sparse=use_sparse)
             for i in range(self.num_chunks)
         ])
         
-        # Linear layer with tied weights
+        # Linear layer with tied weights and no bias
         self.linear = nn.Linear(embedding_dim, vocab_size, bias=False)
         
-        # Initialize weights
+        # Initialize weights with smaller range
         self.init_weights()
     
     def init_weights(self):
-        initrange = 0.1
+        initrange = 0.05  # Reduced from 0.1
         for emb in self.embeddings:
             emb.weight.data.uniform_(-initrange, initrange)
         self.linear.weight.data.uniform_(-initrange, initrange)
