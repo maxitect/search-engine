@@ -12,13 +12,17 @@ def load_docs(path):
     """Load passages from a parquet file and return a list of strings."""
     df = pd.read_parquet(path)
     # assume single-column dataframe of texts
-    return df.values.flatten().tolist()
+    return df.values.flatten()
 
 
 def embed_docs(model, vocab, docs, batch_size=64):
     """Embed documents in batches using the document tower."""
     embs = []
+    total_batches = (len(docs) + batch_size - 1) // batch_size
+    print(f"Processing {len(docs)} documents in {total_batches} batches...")
     for i in range(0, len(docs), batch_size):
+        if i % (batch_size * 10) == 0:
+            print(f"Processing batch {i//batch_size}/{total_batches}...")
         batch = docs[i:i+batch_size]
         seqs = []
         for text in batch:
