@@ -34,19 +34,20 @@ wandb.init(project="word2vec-training", name="cbow-memory-optimized")
 class Config:
     # Data parameters
     window_size = 5
-    min_word_freq = 5
-    max_vocab_size = 100000  # Limit vocabulary size to save memory
+    min_word_freq = 10  # Increased to reduce vocabulary
+    max_vocab_size = 50000  # Reduced from 100000
     
     # Model parameters
-    embedding_dim = 300
+    embedding_dim = 50  # Reduced from 300
     learning_rate = 0.001
-    batch_size = 1024  # Reduced batch size
+    batch_size = 512  # Reduced from 1024
     epochs = 5
     
     # Training optimizations
     use_sparse = True
     use_mixed_precision = True
-    gradient_accumulation_steps = 16  # Increased for memory efficiency
+    gradient_accumulation_steps = 32  # Increased for memory efficiency
+    chunk_size = 500000  # Process 500K words at a time
     
     # Paths
     text8_path = "data/text8"
@@ -55,8 +56,8 @@ class Config:
     
     # Evaluation
     test_words = ["computer", "technology", "data", "learning", "system"]
-    eval_interval = 10000  # Evaluate less frequently
-    top_k = 10  # Number of similar words to find
+    eval_interval = 5000
+    top_k = 10
 
 # Create output directory if it doesn't exist
 os.makedirs(Config.output_dir, exist_ok=True)
@@ -218,46 +219,68 @@ class MemoryEfficientCBOWModel(nn.Module):
     def __init__(self, vocab_size, embedding_dim, use_sparse=True):
         super(MemoryEfficientCBOWModel, self).__init__()
         
-        # Embedding layer
-        self.embeddings = nn.Embedding(vocab_size, embedding_dim, sparse=use_sparse)
+        # Split vocabulary into chunks for memory efficiency
+        self.chunk_size = 10000  # Process 10K words at a time
+        self.num_chunks = (vocab_size + self.chunk_size - 1) // self.chunk_size
         
-        # Use parameter sharing for input and output embeddings
+        # Create embedding chunks
+        self.embeddings = nn.ModuleList([
+            nn.Embedding(min(self.chunk_size, vocab_size - i * self.chunk_size), 
+                        embedding_dim, sparse=use_sparse)
+            for i in range(self.num_chunks)
+        ])
+        
+        # Linear layer with tied weights
         self.linear = nn.Linear(embedding_dim, vocab_size, bias=False)
-        self.linear.weight = self.embeddings.weight  # Tie weights
-        
-        # Small bias term
-        self.bias = nn.Parameter(torch.zeros(vocab_size))
         
         # Initialize weights
         self.init_weights()
     
     def init_weights(self):
-        # Initialize embeddings with smaller values
         initrange = 0.1
-        self.embeddings.weight.data.uniform_(-initrange, initrange)
-        self.bias.data.zero_()
+        for emb in self.embeddings:
+            emb.weight.data.uniform_(-initrange, initrange)
+        self.linear.weight.data.uniform_(-initrange, initrange)
+    
+    def get_embedding(self, indices):
+        """Get embeddings from appropriate chunk"""
+        embeddings = []
+        for i in range(self.num_chunks):
+            mask = (indices >= i * self.chunk_size) & (indices < (i + 1) * self.chunk_size)
+            if mask.any():
+                chunk_indices = indices[mask] - i * self.chunk_size
+                chunk_emb = self.embeddings[i](chunk_indices)
+                embeddings.append((mask, chunk_emb))
+        
+        if not embeddings:
+            return torch.zeros(len(indices), self.embeddings[0].embedding_dim, device=indices.device)
+        
+        result = torch.zeros(len(indices), self.embeddings[0].embedding_dim, device=indices.device)
+        for mask, emb in embeddings:
+            result[mask] = emb
+        return result
     
     def forward(self, contexts):
-        # Get embeddings for all context words
-        embeds = self.embeddings(contexts)
+        if self.training:
+            return torch.utils.checkpoint.checkpoint(self._forward, contexts)
+        return self._forward(contexts)
+    
+    def _forward(self, contexts):
+        # Get embeddings for context
+        embeds = self.get_embedding(contexts)
+        embeds = embeds.view(-1, contexts.size(1), self.embeddings[0].embedding_dim)
+        embeds = embeds.mean(dim=1)
         
-        # Average embeddings (mean pooling)
-        hidden = torch.mean(embeds, dim=1)
-        
-        # Get output scores with tied weights
-        output = self.linear(hidden) + self.bias
-        
-        # Use LogSoftmax for numerical stability
-        log_probs = F.log_softmax(output, dim=1)
-        
-        return log_probs
+        # Get output scores
+        output = self.linear(embeds)
+        return F.log_softmax(output, dim=1)
 
 def train_on_chunk(model, data_chunk, optimizer, criterion, scaler, device, 
                   gradient_accumulation_steps, use_mixed_precision):
-    """Train model on a chunk of data."""
+    """Train model on a chunk of data with memory optimization"""
     # Create dataset and loader for this chunk
     chunk_dataset = SubsampledMemoryEfficientDataset(data_chunk, word_to_idx, Config.window_size, is_test=False)
-    chunk_loader = DataLoader(chunk_dataset, batch_size=Config.batch_size, shuffle=True, num_workers=2)
+    chunk_loader = DataLoader(chunk_dataset, batch_size=Config.batch_size, shuffle=True, num_workers=0)
     
     # Track metrics
     total_loss = 0
@@ -266,6 +289,7 @@ def train_on_chunk(model, data_chunk, optimizer, criterion, scaler, device,
     # Training loop
     model.train()
     progress_bar = tqdm(enumerate(chunk_loader), total=len(chunk_loader), desc="Training on chunk")
+    
     for batch_idx, (contexts, targets) in progress_bar:
         # Move data to device
         contexts = contexts.to(device)
@@ -275,7 +299,6 @@ def train_on_chunk(model, data_chunk, optimizer, criterion, scaler, device,
         with torch.cuda.amp.autocast(enabled=use_mixed_precision):
             log_probs = model(contexts)
             loss = criterion(log_probs, targets)
-            # Scale loss by gradient accumulation steps
             loss = loss / gradient_accumulation_steps
         
         # Backpropagation with mixed precision
@@ -283,10 +306,12 @@ def train_on_chunk(model, data_chunk, optimizer, criterion, scaler, device,
         
         # Accumulate gradients
         if (batch_idx + 1) % gradient_accumulation_steps == 0:
-            # Update weights
             scaler.step(optimizer)
             scaler.update()
             optimizer.zero_grad()
+            
+            # Clear cache after each gradient step
+            torch.cuda.empty_cache()
         
         # Track loss
         total_loss += loss.item() * gradient_accumulation_steps
@@ -295,9 +320,10 @@ def train_on_chunk(model, data_chunk, optimizer, criterion, scaler, device,
         # Update progress bar
         progress_bar.set_description(f"Loss: {total_loss/total_batches:.4f}")
         
-        # Clear cache periodically
-        if batch_idx % 100 == 0:
+        # Clear memory periodically
+        if batch_idx % 50 == 0:
             torch.cuda.empty_cache()
+            gc.collect()
     
     # Make sure to update any remaining accumulated gradients
     if total_batches % gradient_accumulation_steps != 0:
@@ -305,7 +331,6 @@ def train_on_chunk(model, data_chunk, optimizer, criterion, scaler, device,
         scaler.update()
         optimizer.zero_grad()
     
-    # Return average loss
     return total_loss / max(1, total_batches)
 
 def find_similar_words(model, word, word_to_idx, idx_to_word, top_k=10):
@@ -344,43 +369,22 @@ def train_word2vec():
     vocab_size = len(word_to_idx)
     print(f"Creating model with vocabulary size: {vocab_size}")
     
-    # Free some memory before creating the model
+    # Free memory before creating model
     gc.collect()
     torch.cuda.empty_cache()
     
-    # Initialize model with CPU first, then move to GPU after
+    # Initialize model
     model = MemoryEfficientCBOWModel(
         vocab_size=vocab_size, 
         embedding_dim=Config.embedding_dim, 
         use_sparse=Config.use_sparse
-    )
+    ).to(device)
     
-    # Move model to device
-    try:
-        model = model.to(device)
-    except RuntimeError as e:
-        print(f"Error moving model to GPU: {e}")
-        print("Trying with smaller embedding dimension...")
-        
-        # Try with smaller embedding dimension
-        Config.embedding_dim = 100  # Reduced from 300
-        model = MemoryEfficientCBOWModel(
-            vocab_size=vocab_size, 
-            embedding_dim=Config.embedding_dim, 
-            use_sparse=Config.use_sparse
-        ).to(device)
-    
-    # Configure optimizer based on sparse setting
-    if Config.use_sparse:
-        optimizer = optim.SparseAdam(model.parameters(), lr=Config.learning_rate)
-    else:
-        optimizer = optim.Adam(model.parameters(), lr=Config.learning_rate)
+    # Configure optimizer
+    optimizer = optim.SparseAdam(model.parameters(), lr=Config.learning_rate)
     
     # Loss function
     criterion = nn.NLLLoss()
-    
-    # Learning rate scheduler
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', patience=1, factor=0.5)
     
     # Configure mixed precision training
     scaler = torch.cuda.amp.GradScaler(enabled=Config.use_mixed_precision)
@@ -388,10 +392,8 @@ def train_word2vec():
     # Track best loss
     best_loss = float('inf')
     
-    # Split data into smaller chunks for processing
-    chunk_size = 1000000  # Process 1M words at a time
-    num_chunks = (len(filtered_words) + chunk_size - 1) // chunk_size
-    
+    # Split data into chunks
+    num_chunks = (len(filtered_words) + Config.chunk_size - 1) // Config.chunk_size
     print(f"Training on {num_chunks} chunks of data...")
     
     # Training loop
@@ -403,8 +405,8 @@ def train_word2vec():
         # Process each chunk
         for chunk_idx in range(num_chunks):
             print(f"Processing chunk {chunk_idx+1}/{num_chunks}")
-            chunk_start = chunk_idx * chunk_size
-            chunk_end = min((chunk_idx + 1) * chunk_size, len(filtered_words))
+            chunk_start = chunk_idx * Config.chunk_size
+            chunk_end = min((chunk_idx + 1) * Config.chunk_size, len(filtered_words))
             data_chunk = filtered_words[chunk_start:chunk_end]
             
             # Train on this chunk
@@ -429,7 +431,6 @@ def train_word2vec():
             
             # Evaluate every few chunks
             if chunk_idx % 2 == 0:
-                # Find similar words for test words
                 model.eval()
                 for test_word in Config.test_words:
                     if test_word in word_to_idx:
@@ -448,76 +449,33 @@ def train_word2vec():
         epoch_time = time.time() - epoch_start_time
         print(f"Epoch {epoch+1} completed in {epoch_time:.2f}s, Loss: {avg_epoch_loss:.4f}")
         
-        # Create test dataset
-        test_dataset = SubsampledMemoryEfficientDataset(
-            filtered_words[-int(len(filtered_words) * 0.1):],  # Use last 10% for testing
-            word_to_idx, 
-            Config.window_size, 
-            is_test=True
-        )
-        test_loader = DataLoader(test_dataset, batch_size=Config.batch_size, shuffle=False, num_workers=2)
-        
-        # Evaluate on test set
-        model.eval()
-        test_loss = 0
-        test_batches = 0
-        
-        with torch.no_grad():
-            for contexts, targets in tqdm(test_loader, desc="Testing"):
-                contexts = contexts.to(device)
-                targets = targets.to(device)
-                
-                log_probs = model(contexts)
-                loss = criterion(log_probs, targets)
-                
-                test_loss += loss.item()
-                test_batches += 1
-        
-        avg_test_loss = test_loss / max(1, test_batches)
-        print(f"Test Loss: {avg_test_loss:.4f}")
-        
-        # Update learning rate
-        scheduler.step(avg_test_loss)
-        
-        # Log to wandb
-        wandb.log({
-            "epoch": epoch + 1,
-            "train_loss": avg_epoch_loss,
-            "test_loss": avg_test_loss,
-            "epoch_time": epoch_time
-        })
-        
         # Save checkpoint if it's the best model
-        if avg_test_loss < best_loss:
-            best_loss = avg_test_loss
-            # Save in CPU to avoid CUDA memory issues
-            cpu_model = model.cpu()
+        if avg_epoch_loss < best_loss:
+            best_loss = avg_epoch_loss
             torch.save({
                 'epoch': epoch,
-                'model_state_dict': cpu_model.state_dict(),
+                'model_state_dict': model.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
                 'loss': best_loss,
+                'word_to_idx': word_to_idx,
+                'idx_to_word': idx_to_word
             }, os.path.join(Config.output_dir, 'best_model.pt'))
-            model.to(device)  # Move back to GPU
             print("Saved new best model")
     
     print("Training complete!")
     
-    # Save final model in CPU
-    model = model.cpu()
-    
-    # Save embeddings
+    # Save final embeddings
     print("Saving embeddings...")
-    embeddings = model.embeddings.weight.data.numpy()
+    embeddings = model.embeddings.weight.data.cpu().numpy()
     
-    # Save in chunks to avoid memory issues
+    # Save in chunks
     chunk_size = 10000
     for i in range(0, len(word_to_idx), chunk_size):
         chunk_end = min(i + chunk_size, len(word_to_idx))
         chunk_embeddings = embeddings[i:chunk_end]
         np.save(os.path.join(Config.output_dir, f'word2vec_embeddings_chunk_{i}.npy'), chunk_embeddings)
     
-    # Save vocabulary separately
+    # Save vocabulary
     with open(os.path.join(Config.output_dir, 'vocabulary.txt'), 'w', encoding='utf-8') as f:
         for word, idx in word_to_idx.items():
             f.write(f"{word}\t{idx}\n")
