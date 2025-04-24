@@ -31,8 +31,8 @@ class Config:
     batch_size = 10240      # Larger batch size for 4090 GPU
     grad_accumulation = 4  # Gradient accumulation steps
     initial_lr = 0.025     # Standard starting LR for word2vec
-    min_lr = 0.0001
-    epochs = 20            # Increased epochs
+    min_lr = 0.05
+    epochs = 5            # Increased epochs
     use_mixed_precision = True
     weight_decay = 1e-5    # Small weight decay
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -100,7 +100,7 @@ class Word2VecDataset(Dataset):
         """Calculate subsampling probability"""
         freq = self.word_counts[word] / self.total_words
         threshold = 1e-5
-        return (math.sqrt(freq / threshold) + 1) * (threshold / freq)
+        return 1.0 - math.sqrt(threshold / freq) if freq > threshold else 1.0
         
     def _generate_pairs(self, words):
         """Generate training pairs with subsampling"""
@@ -132,11 +132,10 @@ class CBOW(nn.Module):
         self._init_weights()
     
     def _init_weights(self):
-        """Better initialization range"""
-        init_range = 1.0 / math.sqrt(self.embeddings.embedding_dim)
-        nn.init.uniform_(self.embeddings.weight, -init_range, init_range)
-        nn.init.uniform_(self.context_embeddings.weight, -init_range, init_range)
-    
+    """Xavier/Glorot initialization"""
+    nn.init.xavier_uniform_(self.embeddings.weight)
+    nn.init.xavier_uniform_(self.context_embeddings.weight)
+
     def forward(self, context, target):
         batch_size = context.size(0)
         
