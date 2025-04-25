@@ -16,8 +16,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
 # Entry point script
-COPY docker-entrypoint.sh /
-RUN chmod +x /docker-entrypoint.sh
+COPY entrypoint.sh /
+RUN chmod +x /entrypoint.sh
 
 # Expose the port for FastAPI
 EXPOSE 8000
