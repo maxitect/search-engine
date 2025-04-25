@@ -16,10 +16,10 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
 # Make the entrypoint script executable
-RUN chmod +x /entrypoint.sh
+RUN chmod +x /app/entrypoint.sh
 
 # Expose the port for FastAPI
 EXPOSE 8000
 
 # Set the entrypoint
-ENTRYPOINT ["/entrypoint.sh"]
+ENTRYPOINT ["/app/entrypoint.sh"]
