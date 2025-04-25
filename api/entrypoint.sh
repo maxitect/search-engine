@@ -12,6 +12,8 @@ fi
 # Run the ChromaDB setup script if requested
 if [ "$DOWNLOAD_MODELS" = "true" ]; then
     echo "Downloading models and setting up ChromaDB"
+    python 00_train_data.py
+    python 01a_train_token.py
     python 03_setup_chromadb.py --download_sg --download_tt
 else
     echo "Skipping model download and ChromaDB setup"
