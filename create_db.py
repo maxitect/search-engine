@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 logging.basicConfig() # Basic config for logging
 
-CONFIG_OPTIONS = ['chroma','my_embeddings', 'gensim_embeddings', 'baseline']
+CONFIG_OPTIONS = ['chroma','gensim_embeddings', 'baseline']
 
 # --- Helper function to parse arguments ---
 def parse_args():
@@ -34,13 +34,6 @@ def parse_args():
     if args.device == 'gpu':
         args.device = 'cuda'
     return args
-
-
-def create_db_chroma_embeddings(num_entries=None, device='cuda'):
-    # Set up Chroma
-    chroma_client = chromadb.PersistentClient()
-    
-
 
 def create_db_my_embeddings(config, device, num_entries=None):
     chroma_client = chromadb.PersistentClient()
@@ -102,15 +95,12 @@ def create_db_my_embeddings(config, device, num_entries=None):
 if __name__ == '__main__':
     args = parse_args() # Parse arguments
 
-    if args.config == 'chroma':
-        create_db_chroma_embeddings(num_entries=args.num_entries)
-    else:
-        # Pass device and num_entries for custom embeddings
-        create_db_my_embeddings(
-            config=args.config,
-            device=args.device,
-            num_entries=args.num_entries
-        )
+    # Pass device and num_entries for custom embeddings
+    create_db_my_embeddings(
+        config=args.config,
+        device=args.device,
+        num_entries=args.num_entries
+    )
 
     logger.info("Database creation process finished.")
 

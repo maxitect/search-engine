@@ -1,7 +1,8 @@
-import gensim.downloader as api
 import re
-import numpy as np
 from typing import List, Optional
+
+import gensim.downloader as api
+import numpy as np
 import torch
 
 

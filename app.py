@@ -1,10 +1,10 @@
 import logging
 import os
+import sys
 
 import chromadb
 import streamlit as st
 import wandb
-from huggingface_hub._login import _login
 from pydantic import BaseModel, Field
 
 from create_db import CONFIG_OPTIONS
@@ -13,19 +13,24 @@ from inference import setup_semantics_embedder
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
-embedding_methods = ['Chroma', CONFIG_OPTIONS[1], CONFIG_OPTIONS[2]]
+embedding_methods = CONFIG_OPTIONS
 
+if len(sys.argv) > 1:
+    if sys.argv[1] == 'docker':
+        logger.info('Running in Docker, login using Docker secrets')
+        from huggingface_hub._login import _login
 
-# Sets up API Keys from Docker Compose
-with open("/run/secrets/HF_TOKEN") as f:
-    HF_TOKEN = f.read().strip()
+    # Sets up API Keys from Docker Compose
+    with open("/run/secrets/HF_TOKEN") as f:
+        HF_TOKEN = f.read().strip()
 
-with open("/run/secrets/WANDB_API_KEY") as f:
-    WANDB_API_KEY = f.read().strip()
+    with open("/run/secrets/WANDB_API_KEY") as f:
+        WANDB_API_KEY = f.read().strip()
 
-_login(token=HF_TOKEN, add_to_git_credential=False)
-wandb.login(key=WANDB_API_KEY)
-
+    _login(token=HF_TOKEN, add_to_git_credential=False)
+    wandb.login(key=WANDB_API_KEY)
+else:
+    logger.info('Running in local, login using API keys in terminal.')
 
 @st.cache_resource
 def setup():
@@ -43,17 +48,17 @@ st.title('Search Engine Demo 🕵')
 
 # Make dropdown in the sidebar for selecting the embedding method
 with st.sidebar:
-    embedding_method = st.selectbox(
-        'Select the embedding method:', embedding_methods,
+    config = st.selectbox(
+        'Select the embedding method:', CONFIG_OPTIONS,
     )
 
-if embedding_method == 'Chroma':
+if config == CONFIG_OPTIONS[0]:
     logger.info('Using Chroma')
-    collection = chroma_client.get_or_create_collection(name='train_docs')
+    collection = chroma_client.get_or_create_collection(name=f'train_docs_{config}')
 else:
-    logger.info(f'Using {embedding_method}')
+    logger.info(f'Using {config}')
     collection = chroma_client.get_or_create_collection(
-        name=f'train_docs_{embedding_method}',
+        name=f'train_docs_{config}',
     )
 
 # Add a text input for the search query
@@ -67,7 +72,7 @@ k = st.slider(
 
 if query:
     logger.info(f"Received query: '{query}', k={k}")
-    if embedding_method == 'Chroma':
+    if config == CONFIG_OPTIONS[0]:
         # Chroma will embed this for you
         results = collection.query(
             query_texts=[query],
@@ -75,7 +80,7 @@ if query:
         )
     else:
         # Embed the query using the model
-        query_embedding = semantics_embedders[embedding_method].embed_query(
+        query_embedding = semantics_embedders[config].embed_query(
             query,
         ).tolist()
         results = collection.query(
