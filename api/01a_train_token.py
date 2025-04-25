@@ -2,6 +2,7 @@ import collections
 import os
 import pickle
 import pandas as pd
+import wandb
 
 import src.config as config
 from src.utils.tokenise import create_lookup_tables, preprocess
@@ -65,6 +66,35 @@ with open(config.VOCAB_TO_ID_PATH, 'wb') as f:
     pickle.dump(words_to_ids, f)
 with open(config.ID_TO_VOCAB_PATH, 'wb') as f:
     pickle.dump(ids_to_words, f)
+
+# Upload the tokenization files to Weights & Biases
+print('Uploading tokenisation files to Weights & Biases...')
+try:
+    # Initialize a new W&B run
+    run = wandb.init(
+        project="search-engine",
+        job_type="tokenization",
+        name="token-files-upload"
+    )
+
+    # Create an artifact for token files
+    artifact = wandb.Artifact("token-files", type="tokenization")
+
+    # Add files to the artifact
+    artifact.add_file(config.VOCAB_TO_ID_PATH)
+    artifact.add_file(config.ID_TO_VOCAB_PATH)
+    artifact.add_file(config.CORPUS_PATH)
+
+    # Log the artifact to W&B
+    run.log_artifact(artifact)
+
+    print('Successfully uploaded tokenisation files to W&B')
+
+    # Finish the run
+    run.finish()
+except Exception as e:
+    print(f"Error uploading to W&B: {e}")
+    print("Continuing without upload...")
 
 print('Deleting downloaded text8 file...')
 os.remove('text8')

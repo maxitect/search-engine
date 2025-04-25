@@ -67,6 +67,20 @@ def load_twotowers(vocab_to_int):
     return model
 
 
+def download_embeddings(download, embedding_name, dir):
+    if download:
+        print(f"Downloading {embedding_name} embeddings from latest...")
+
+        api = wandb.Api()
+        artifact = api.artifact(
+            'maxime-downe-founders-and-coders/search-engine/'
+            f'{embedding_name}:latest')
+        artifact_dir = artifact.download(root=dir)
+
+        print(f"Successfully downloaded {embedding_name} embeddings to {dir}")
+        return artifact_dir
+
+
 def download_model(download, model_name, dir):
     if download:
         print(

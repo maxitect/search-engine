@@ -3,7 +3,7 @@ import os
 
 import src.config as config
 from src.database import build_chroma
-from src.utils.model_loader import download_model
+from src.utils.model_loader import download_embeddings, download_model
 
 
 if __name__ == "__main__":
@@ -22,6 +22,9 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     # Download model if required
+    download_embeddings(
+        args.download_sg, "token-files", config.SKIPGRAM_CHECKPOINT_DIR
+    )
     download_model(
         args.download_sg, "skipgram-best", config.SKIPGRAM_CHECKPOINT_DIR
     )
