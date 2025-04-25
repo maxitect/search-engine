@@ -23,10 +23,10 @@ with st.sidebar:
     st.header("About")
     st.info(
         """
-        This search engine uses a Two-Tower neural network architecture 
-        to encode both queries and documents. The model encodes your 
+        This search engine uses a Two-Tower neural network architecture
+        to encode both queries and documents. The model encodes your
         search query and finds the most semantically similar documents.
-        
+
         The search is powered by:
         - Neural embeddings (Two-Tower architecture)
         - ChromaDB as the vector database
