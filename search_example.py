@@ -3,7 +3,7 @@ from src.data_preparation import load_msmarco_data
 import os
 import argparse
 
-def main(max_documents=100000):  # Default to 1000 documents for quick testing
+def main(max_documents=100000000):  # Default to 1000 documents for quick testing
     # Initialize the search engine with the trained model
     model_path = os.path.join('models', 'best_model.pth')
     search_engine = SearchEngine(model_path)
