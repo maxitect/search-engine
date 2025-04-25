@@ -4,3 +4,5 @@ __pycache__
 artifacts/
 wandb/
 chroma/
+WAND_API_KEY.txt
+HUGGINGFACE_API_KEY.txt

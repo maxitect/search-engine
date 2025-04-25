@@ -1,0 +1,15 @@
+services:
+  myapp:
+    image: search
+    secrets:
+      - HF_TOKEN
+      - WANDB_API_KEY
+    ports:
+      - "8501:8501"
+    volumes:
+      - ./chroma:/code/chroma
+secrets:
+  HF_TOKEN:
+    file: ./HUGGINGFACE_API_KEY.txt
+  WANDB_API_KEY:
+    file: ./WAND_API_KEY.txt

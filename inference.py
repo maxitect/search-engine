@@ -1,10 +1,12 @@
 # Pull models from HF
-from engine.text import setup_language_models, MeanPooledWordEmbedder
-from engine.model import Encoder
-import torch
-from engine.utils import get_wandb_checkpoint_path, get_device
-from engine.text.gensim_w2v import GensimWord2Vec
 import logging
+
+import torch
+
+from engine.model import Encoder
+from engine.text import MeanPooledWordEmbedder, setup_language_models
+from engine.text.gensim_w2v import GensimWord2Vec
+from engine.utils import get_device, get_wandb_checkpoint_path
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)

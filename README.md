@@ -118,9 +118,13 @@ Config
 
 ## Deployment
 
-Create the relevant databases. This is most readily performed on a GPU enabled computer
+Create the relevant databases. This is most readily performed on a GPU enabled computer, but can be done on CPU as required.
+- Upload uses 16 iterations per second on our own embeddings
+
 ```bash
-python3 create_db.py
+# If on CPU
+export OMP_NUM_THREADS=1
+python3 create_db.py --device cpu --num_entries 2000
 ```
 
 Running the search engine for the front-end
@@ -129,7 +133,12 @@ Running the search engine for the front-end
 streamlit run app.py --server.port 8080
 ```
 
-ChromaDB uses senc
+With docker
+```bash
+# Build docker image
+docker build -t search .
+# Bind mount the database
+```
 
 
 ## Installation

@@ -1,20 +1,36 @@
+import logging
 import os
 
 import chromadb
 import streamlit as st
-from inference import setup_semantics_embedder
-from create_db import CONFIG_OPTIONS
+import wandb
+from huggingface_hub._login import _login
+from pydantic import BaseModel, Field
 
-import logging
+from create_db import CONFIG_OPTIONS
+from inference import setup_semantics_embedder
+
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
 embedding_methods = ['Chroma', CONFIG_OPTIONS[1], CONFIG_OPTIONS[2]]
 
 
+# Sets up API Keys from Docker Compose
+with open("/run/secrets/HF_TOKEN") as f:
+    HF_TOKEN = f.read().strip()
+
+with open("/run/secrets/WANDB_API_KEY") as f:
+    WANDB_API_KEY = f.read().strip()
+
+_login(token=HF_TOKEN, add_to_git_credential=False)
+wandb.login(key=WANDB_API_KEY)
+
+
 @st.cache_resource
 def setup():
     chroma_client = chromadb.PersistentClient()
+    logger.info('Setting up the embedding models...')
     semantics_embedders = {}
     for method in embedding_methods[1:]:
         semantics_embedders[method] = setup_semantics_embedder(method)
@@ -50,6 +66,7 @@ k = st.slider(
 )
 
 if query:
+    logger.info(f"Received query: '{query}', k={k}")
     if embedding_method == 'Chroma':
         # Chroma will embed this for you
         results = collection.query(
