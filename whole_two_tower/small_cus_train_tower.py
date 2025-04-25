@@ -95,9 +95,19 @@ class CustomMSMARCODataset(Dataset):
             ).squeeze(0)
         else:
             # For Word2Vec, we need to convert text to tokens
-            # First, split the text into words
-            query_words = item['query_text'].lower().split()
-            passage_words = item['passage_text'].lower().split()
+            # First, get the text - handle both string and list inputs
+            query_text = item['query_text']
+            passage_text = item['passage_text']
+            
+            # If it's a list, join it into a string
+            if isinstance(query_text, list):
+                query_text = ' '.join(query_text)
+            if isinstance(passage_text, list):
+                passage_text = ' '.join(passage_text)
+            
+            # Split the text into words
+            query_words = query_text.lower().split()
+            passage_words = passage_text.lower().split()
             
             # Convert words to token IDs using the vocabulary
             query_tokens = [self.vocab.get(word, 0) for word in query_words]  # 0 for unknown words
@@ -265,7 +275,7 @@ def get_top_examples(model, query_batch, passage_batch, dataset, k=5):
         # Ensure k is not larger than the batch size
         k = min(k, len(scores))
         if k == 0:
-            return torch.tensor([]), torch.tensor([])
+            return [], []
             
         top_scores, top_indices = torch.topk(scores, k)
         return top_scores.cpu().numpy(), top_indices.cpu().numpy()
@@ -290,45 +300,29 @@ def tokens_to_text(tokens, dataset, is_query=True):
         tokens = tokens.cpu().numpy()
     return dataset.decode_tokens(tokens, is_query)
 
-def print_top_example(model, query_batch, passage_batch, dataset, batch_idx, top_idx, word_vectors):
+def print_top_example(model, query_batch, passage_batch, dataset, batch_idx, top_idx):
     """Print a formatted example showing the actual query and passage text."""
-    # Create decoder instance
-    decoder = SimpleTokenDecoder(use_bert=dataset.use_bert)
-    
-    # Get the query and passage tokens
-    query_tokens = query_batch[top_idx]
-    passage_tokens = passage_batch[top_idx]
-    
-    print("\n" + "="*50)
-    print("QUERY INFORMATION:")
-    print("="*50)
-    decoder.print_token_info(query_tokens)
-    
-    print("\n" + "="*50)
-    print("PASSAGE INFORMATION:")
-    print("="*50)
-    decoder.print_token_info(passage_tokens)
-    
     # Get the original text from dataset
     item = dataset.get_text(batch_idx)
     print("\n" + "="*50)
-    print("ORIGINAL TEXT FROM DATASET:")
+    print("QUERY:")
     print("="*50)
-    print("Query:", item['query_text'])
-    print("Passage:", item['passage_text'])
-    print("Is selected:", item['is_selected'])
+    print(item['query_text'])
+    
+    print("\n" + "="*50)
+    print("TOP MATCHING PASSAGE:")
+    print("="*50)
+    print(item['passage_text'])
+    print(f"Is selected: {item['is_selected']}")
     print("="*50 + "\n")
 
-def show_random_example(model, val_loader, val_dataset, device, word_vectors):
+def show_random_example(model, val_loader, val_dataset, device):
     """Show a random query and its most similar passage."""
     # Get a random batch
     batch = next(iter(val_loader))
     query = batch['query'].to(device)
     passage = batch['passage'].to(device)
     is_selected = batch['is_selected'].to(device)
-    
-    # Create decoder instance
-    decoder = SimpleTokenDecoder(use_bert=val_dataset.use_bert)
     
     # Get model predictions
     with torch.no_grad():
@@ -339,28 +333,19 @@ def show_random_example(model, val_loader, val_dataset, device, word_vectors):
         # Get the most similar passage
         top_score, top_idx = torch.max(scores, dim=0)
         
-        # Print query information
-        print("\n" + "="*50)
-        print("QUERY INFORMATION:")
-        print("="*50)
-        decoder.print_token_info(query[0])
-        
-        # Print passage information
-        print("\n" + "="*50)
-        print("MOST SIMILAR PASSAGE INFORMATION:")
-        print("="*50)
-        decoder.print_token_info(passage[top_idx])
-        
-        print(f"\nSimilarity Score: {top_score.item():.4f}")
-        print(f"Correct Match: {'Yes' if is_selected[top_idx].item() == 1 else 'No'}")
-        
         # Get and print original text
         item = val_dataset.get_text(0)
         print("\n" + "="*50)
-        print("ORIGINAL TEXT FROM DATASET:")
+        print("QUERY:")
         print("="*50)
-        print("Query:", item['query_text'])
-        print("Passage:", item['passage_text'])
+        print(item['query_text'])
+        
+        print("\n" + "="*50)
+        print("MOST SIMILAR PASSAGE:")
+        print("="*50)
+        print(item['passage_text'])
+        print(f"Similarity Score: {top_score.item():.4f}")
+        print(f"Correct Match: {'Yes' if is_selected[top_idx].item() == 1 else 'No'}")
         print("="*50 + "\n")
 
 def evaluate_test_set(model, test_loader, device, num_batches=10):
@@ -390,72 +375,58 @@ def evaluate_test_set(model, test_loader, device, num_batches=10):
     model.train()
     return np.mean(test_losses) if test_losses else float('nan')
 
-def print_top_10_passages(model, dataset, word_vectors):
-    """Print the top 10 most similar passages for a random query."""
-    # Get the device the model is on
+def print_top_10_passages(model, test_dataset):
+    """Print the top 6 most similar passages for a random query from the test set."""
     device = next(model.parameters()).device
     
-    # Example queries
-    queries = [
-        "What is a color?",
-        "How does a neural network work?",
-        "What are the applications of artificial intelligence?"
-    ]
+    # Pick a random query from the test set
+    random_idx = np.random.randint(0, len(test_dataset))
+    item = test_dataset[random_idx]
     
-    # Create a mapping from index to document text
-    doc_id_to_text = {}
-    for idx in range(len(dataset)):
-        item = dataset.get_text(idx)  # Use get_text method to get original text
-        doc_id_to_text[f"doc_{idx}"] = item['passage_text']
+    # Get the query text based on whether we're using BERT or Word2Vec
+    if test_dataset.use_bert:
+        query_tokens = item['query'].tolist()
+        query_text = test_dataset.tokenizer.decode(query_tokens, skip_special_tokens=True)
+    else:
+        # For Word2Vec, get the original text from the dataset
+        query_text = test_dataset.data[random_idx]['query_text']
+    print(f"\nQuery: {query_text}")
     
-    # Perform searches
-    print("\nPerforming searches...")
-    for query in queries:
-        print(f"\nQuery: {query}")
+    # Get query embedding
+    with torch.no_grad():
+        query_embedding = model.query_tower(item['query'].unsqueeze(0).to(device))
         
-        # Tokenize the query
-        if dataset.use_bert:
-            query_tokens = dataset.tokenizer.encode(
-                query,
-                add_special_tokens=True,
-                max_length=dataset.max_query_len,
-                padding='max_length',
-                truncation=True,
-                return_tensors='pt'
-            ).squeeze(0).to(device)
-        else:
-            query_words = query.lower().split()
-            query_tokens = [dataset.vocab.get(word, 0) for word in query_words]
-            query_tokens = query_tokens[:dataset.max_query_len] + [0] * (dataset.max_query_len - len(query_tokens))
-            query_tokens = torch.LongTensor(query_tokens).to(device)
+        print("Computing similarities with all passages...")
+        # Compute similarities with all passages in test set
+        similarities = []
+        for idx in tqdm(range(len(test_dataset)), desc="Processing passages"):
+            item_tokens = test_dataset[idx]
+            passage_tokens = item_tokens['passage'].to(device)
+            passage_embedding = model.passage_tower(passage_tokens.unsqueeze(0))
+            similarity = torch.nn.functional.cosine_similarity(
+                query_embedding, passage_embedding, dim=1
+            ).item()
+            similarities.append((idx, similarity))
         
-        # Get query embedding
-        with torch.no_grad():
-            query_embedding = model.query_tower(query_tokens.unsqueeze(0))
-            
-            # Compute similarities with all passages
-            similarities = []
-            for idx in range(len(dataset)):
-                item = dataset[idx]
-                passage_tokens = item['passage'].to(device)
-                passage_embedding = model.passage_tower(passage_tokens.unsqueeze(0))
-                similarity = torch.nn.functional.cosine_similarity(
-                    query_embedding, passage_embedding, dim=1
-                ).item()
-                similarities.append((f"doc_{idx}", similarity))
-            
-            # Sort by similarity and get top 5
-            similarities.sort(key=lambda x: x[1], reverse=True)
-            top_results = similarities[:5]
-            
-            print("\nTop 5 results:")
-            for doc_id, score in top_results:
-                print(f"\nDocument ID: {doc_id}")
-                print(f"Similarity Score: {score:.4f}")
-                print("Content:")
-                print("-" * 80)
-                print(doc_id_to_text[doc_id])
-                print("-" * 80)
+        # Sort by similarity and get top 6
+        similarities.sort(key=lambda x: x[1], reverse=True)
+        top_results = similarities[:6]
+        
+        print("\nTop 6 results:")
+        for idx, score in top_results:
+            # Get the passage text based on whether we're using BERT or Word2Vec
+            if test_dataset.use_bert:
+                item_tokens = test_dataset[idx]
+                passage_tokens = item_tokens['passage'].tolist()
+                passage_text = test_dataset.tokenizer.decode(passage_tokens, skip_special_tokens=True)
+            else:
+                # For Word2Vec, get the original text from the dataset
+                passage_text = test_dataset.data[idx]['passage_text']
+            print(f"\nSimilarity Score: {score:.4f}")
+            print("Content:")
+            print("-" * 80)
+            print(passage_text)
+            print("-" * 80)
 
 def train_model(config):
     # Initialize wandb
@@ -573,7 +544,7 @@ def train_model(config):
     
     # Show initial top 10 passages before training
     print("\nInitial Top 10 Similar Passages (Before Training):")
-    print_top_10_passages(model, val_dataset, word_vectors)
+    print_top_10_passages(model, test_dataset)
     
     # Training loop
     patience_counter = 0
@@ -714,24 +685,17 @@ def train_model(config):
             top_scores, top_indices = top_examples[random_batch_idx]
             
             if len(top_indices) > 0:
-                # Get the appropriate word vectors based on embedding type
-                if use_bert:
-                    with open('/root/search-engine/models/text8_embeddings/inherited_bert_vocab.json', 'r') as f:
-                        word_vectors = json.load(f)
-                else:
-                    word_vectors = Word2Vec.load('/root/search-engine/models/text8_embeddings/word2vec_model').wv
-                
                 # Get the batch data
                 batch = next(iter(val_loader))
                 query = batch['query'].to(device)
                 passage = batch['passage'].to(device)
                 
-                print_top_example(model, query, passage, val_dataset, random_batch_idx, top_indices[0], word_vectors)
+                print_top_example(model, query, passage, val_dataset, random_batch_idx, top_indices[0])
                 print(f"Similarity Score: {top_scores[0]:.4f}\n")
         
         # After validation, print top 10 passages
         print("\nTop 10 Similar Passages for Random Query:")
-        print_top_10_passages(model, val_dataset, word_vectors)
+        print_top_10_passages(model, test_dataset)
         
         # Update learning rate
         scheduler.step()
@@ -864,14 +828,14 @@ def train_model(config):
     choice = input().lower()
     if choice == 'y':
         print("\nShowing test set examples:")
-        show_random_example(model, test_loader, test_dataset, device, word_vectors)
+        show_random_example(model, test_loader, test_dataset, device)
     
     # Original validation set examples option
     print("\nWould you like to see examples from the validation set? (y/n)")
     while True:
         choice = input().lower()
         if choice == 'y':
-            show_random_example(model, val_loader, val_dataset, device, word_vectors)
+            show_random_example(model, val_loader, val_dataset, device)
             print("\nWould you like to see another example? (y/n)")
         elif choice == 'n':
             break
