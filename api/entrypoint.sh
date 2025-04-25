@@ -16,7 +16,8 @@ if [ "$DOWNLOAD_MODELS" = "true" ]; then
     python 01a_train_token.py
     python 03_setup_chromadb.py --download_sg --download_tt
 else
-    echo "Skipping model download and ChromaDB setup"
+    echo "Skipping model download"
+    python 03_setup_chromadb.py
 fi
 
 # Start the FastAPI application
