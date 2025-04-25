@@ -1,0 +1,36 @@
+[theme]
+# Primary accent color for interactive elements
+primaryColor = "#4CAF50"
+
+# Background color for the main content area
+backgroundColor = "#FFFFFF"
+
+# Background color used for the sidebar and most interactive widgets
+secondaryBackgroundColor = "#F8F9FA"
+
+# Color used for almost all text
+textColor = "#31333F"
+
+# Font family for all text in the app, except code blocks
+font = "sans-serif"
+
+[server]
+# If true, will show a message when the app runs telling users about the development server
+showDevelopmentWarning = false
+
+# Maximum size, in megabytes, of messages that can be sent via the WebSocket connection
+maxMessageSize = 200
+
+[browser]
+# Whether to initially open the browser or not
+gatherUsageStats = false
+
+[ui]
+# Hide the deployment details when running in hosted spaces
+hideTopBar = true
+# Enable custom rendering of markdown by default
+hideStFormMarkdown = false
+
+[logger]
+# Level of logging: trace, debug, info, warning, error, or critical
+level = "info"

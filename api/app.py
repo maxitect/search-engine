@@ -71,7 +71,7 @@ async def search(
 
     # Query ChromaDB
     results = app.state.collection.query(
-        query_embeddings=query_emb,
+        query_embeddings=[query_emb],
         n_results=top_k
     )
 

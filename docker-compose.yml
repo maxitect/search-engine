@@ -1,0 +1,40 @@
+version: "3.8"
+
+services:
+  search-api:
+    build:
+      context: ./api
+      dockerfile: Dockerfile
+    volumes:
+      - ./api/models:/app/models
+    environment:
+      - WANDB_API_KEY=${WANDB_API_KEY}
+      - DOWNLOAD_MODELS=${DOWNLOAD_MODELS:-false}
+    ports:
+      - "8000:8000"
+    networks:
+      - search-net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  web-app:
+    build:
+      context: ./web-app
+      dockerfile: Dockerfile
+    ports:
+      - "8501:8501"
+    depends_on:
+      search-api:
+        condition: service_healthy
+    networks:
+      - search-net
+    environment:
+      - SEARCH_API_URL=http://search-api:8000
+
+networks:
+  search-net:
+    driver: bridge

@@ -1,4 +1,5 @@
 import argparse
+import os
 
 import src.config as config
 from src.database import build_chroma
@@ -28,3 +29,11 @@ if __name__ == "__main__":
         args.download_tt, "two-towers-best", config.TWOTOWERS_CHECKPOINT_DIR
     )
     build_chroma()
+
+    os.remove(
+        'ms_marco_test.parquet',
+        'ms_marco_train.parquet',
+        'ms_marco_validation.parquet'
+        'ms_marco_docs.parquet'
+        'text8'
+    )
