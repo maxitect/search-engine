@@ -6,7 +6,7 @@ import pickle
 import src.config as config
 from src.dataset import MSMARCOTripletDataset
 from src.utils.model_loader import load_twotowers
-from utils.models.twotowers import cosine_similarity
+from src.models.twotowers import cosine_similarity
 
 dev = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
