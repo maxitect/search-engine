@@ -68,7 +68,7 @@ def main(max_documents=100000000):  # Default to 1000 documents for quick testin
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument('--max-docs', type=int, default=1000, 
-                       help='Maximum number of documents to process (default: 1000)')
+    parser.add_argument('--max-docs', type=int, default=100000000, 
+                       help='Maximum number of documents to process (default: 100000000)')
     args = parser.parse_args()
     main(args.max_docs) 
