@@ -34,9 +34,6 @@ if __name__ == "__main__":
     build_chroma()
 
     os.remove(
-        'ms_marco_test.parquet',
-        'ms_marco_train.parquet',
-        'ms_marco_validation.parquet'
         'ms_marco_docs.parquet'
         'text8'
     )
